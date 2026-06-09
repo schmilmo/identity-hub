@@ -1,0 +1,62 @@
+# IdentityHub — full stack for local/demo use: `docker compose up --build`.
+#
+# Steady state is three services. The bonus `digest` job is defined under a
+# profile so it does NOT start by default; run it on demand with:
+#   docker compose run --rm digest
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: identityhub
+      POSTGRES_PASSWORD: identityhub
+      POSTGRES_DB: identityhub
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identityhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://identityhub:identityhub@db:5432/identityhub
+      # For a real deployment, set a stable 32-byte secret. This dev default is
+      # intentionally weak and must be overridden outside local use.
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-dev-only-insecure-key-change-me-please}
+      FRONTEND_ORIGIN: http://localhost:5173
+      SECURE_COOKIES: "false"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+
+  # Bonus: NHI Blog Digest. One-shot job, not a long-running service.
+  # Started only via `docker compose run --rm digest` (profile keeps it out of
+  # the default `up`).
+  digest:
+    build: ./backend
+    profiles: ["digest"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://identityhub:identityhub@db:5432/identityhub
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-dev-only-insecure-key-change-me-please}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DIGEST_USER_EMAIL: ${DIGEST_USER_EMAIL:-}
+      DIGEST_PROJECT_KEY: ${DIGEST_PROJECT_KEY:-}
+    command: ["python", "-m", "app.digest.run"]
+
+volumes:
+  pgdata:
