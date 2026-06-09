@@ -52,39 +52,89 @@ external systems (scanners, CI/CD).
 ### Run everything with Docker Compose (recommended)
 
 ```bash
-# 1. (Optional) set a strong encryption key. A weak dev default is used if you skip this.
-cp .env.example .env
-#    then edit .env and set APP_ENCRYPTION_KEY to a 32-byte secret, e.g.:
-#    python -c 'import secrets;print(secrets.token_urlsafe(32))'
-
-# 2. Build and start the stack (Postgres + backend + frontend).
+# Build and start the stack (Postgres + Vault + backend + frontend).
 docker compose up --build
 ```
 
-That's it. Three services start:
+That's it — no config needed for a local run. Four services start:
 
 | URL | What |
 |---|---|
 | <http://localhost:5173> | **Web app** — open this to use IdentityHub |
 | <http://localhost:8000/docs> | Interactive API docs (OpenAPI/Swagger) |
 | <http://localhost:8000/health> | Health check |
+| <http://localhost:8200> | Vault dev UI/API (token `root`) — Transit engine |
+
+Jira API tokens are encrypted with **Vault's Transit engine** out of the box;
+the backend provisions the `identityhub` transit key on startup.
 
 Stop with `Ctrl-C`, or `docker compose down` (add `-v` to also wipe the
 Postgres volume and start fresh).
 
 ### Configuration
 
-All configuration is via environment variables (read from `.env` by Compose).
+All configuration is via environment variables (read from `.env` by Compose);
+defaults work for a local run.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `APP_ENCRYPTION_KEY` | weak dev placeholder | Master key for Jira-token encryption. **Set a stable 32-byte secret for any real use** — rotating it makes stored tokens undecryptable. |
+| `CRYPTO_BACKEND` | `vault` | Token-encryption backend: `vault` (Transit) or `local` (AES-256-GCM). |
+| `VAULT_ADDR` / `VAULT_TOKEN` | Compose Vault / `root` | Vault address + token (used when `CRYPTO_BACKEND=vault`). |
+| `APP_ENCRYPTION_KEY` | weak dev placeholder | AES-256-GCM master key — **only used when `CRYPTO_BACKEND=local`**. Set a stable 32-byte secret for real use; rotating it makes stored tokens undecryptable. |
 | `DATABASE_URL` | Compose Postgres | Async SQLAlchemy connection string |
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Session lifetime |
 | `SECURE_COOKIES` | `false` | Set `true` behind HTTPS in production |
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | CORS origin allowed to send the session cookie |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Set all three to enable SSO login (e.g. Auth0). Unset = email+password. |
+| `OIDC_REDIRECT_URI` | `…/auth/oidc/callback` | Must match an Allowed Callback URL at the IdP |
 | `ANTHROPIC_API_KEY` | — | For the bonus NHI Blog Digest |
 | `DIGEST_USER_EMAIL` / `DIGEST_PROJECT_KEY` | — | Target account + project for the bonus digest |
+
+### Enabling SSO with a hosted IdP (Auth0)
+
+Login is email+password by default. To use SSO instead, register an app at your
+IdP and set the `OIDC_*` variables. The integration is **provider-agnostic**
+(OIDC discovery), so Okta/Google/Entra work the same way with their issuer —
+the steps below use **Auth0**.
+
+**1. Create a tenant + application**
+1. Sign up / log in at [auth0.com](https://auth0.com). The first login creates a
+   **tenant** with a domain like `your-tenant.us.auth0.com` (region suffix varies).
+2. **Applications → Applications → Create Application**.
+3. Name it (e.g. `IdentityHub`), choose **Regular Web Applications**, **Create**.
+   Then open the **Settings** tab.
+
+**2. Copy the three values** from Settings:
+- **Domain** (e.g. `your-tenant.us.auth0.com`)
+- **Client ID**
+- **Client Secret**
+
+**3. Configure the URLs** (under *Application URIs* — must match exactly, then
+**Save Changes**):
+
+| Field | Value |
+|---|---|
+| Allowed Callback URLs | `http://localhost:8000/auth/oidc/callback` |
+| Allowed Logout URLs | `http://localhost:5173` |
+| Allowed Web Origins | `http://localhost:5173` |
+
+A callback-URL mismatch is the most common cause of OIDC login failures.
+
+**4. Ensure you have a user to log in as.** New tenants usually have the
+**Username-Password-Authentication** database connection enabled. Create a test
+user under **User Management → Users → Create User** if needed.
+
+**5. Set the env** in `.env` at the repo root (gitignored — the secret is not
+committed). `OIDC_ISSUER` is the **Domain with `https://`**, no path:
+```bash
+OIDC_ISSUER=https://your-tenant.us.auth0.com
+OIDC_CLIENT_ID=<Client ID>
+OIDC_CLIENT_SECRET=<Client Secret>
+```
+
+**6. Start it:** `docker compose up -d --build backend`. The login screen now
+shows **Log in with SSO**, and the password endpoints return `403`. The backend
+derives the discovery URL `…/.well-known/openid-configuration` from the issuer.
 
 ---
 
@@ -158,6 +208,8 @@ cd backend
 python -m venv .venv && source .venv/bin/activate   # Python 3.12 or 3.13
 pip install -r requirements.txt
 export DATABASE_URL="postgresql+asyncpg://identityhub:identityhub@localhost:5432/identityhub"
+# Without a Vault instance, use the local AES-GCM backend:
+export CRYPTO_BACKEND=local
 export APP_ENCRYPTION_KEY="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
 uvicorn app.main:app --reload --port 8000
 
@@ -210,11 +262,13 @@ curl -X POST localhost:8000/api/v1/findings \
 ┌───────────────┐ Bearer  │  /findings create / list tickets   ─────┼──────►│ Jira Cloud │
 │ Scanner / CI  │  apikey  │  /api-keys manage external keys          │ httpx │ REST API   │
 │ (machines)    │◄───────►│  /api/v1   external machine API          │ Basic └────────────┘
-└───────────────┘         └──────────────────┬───────────────────────┘
-                                             │ async SQLAlchemy
-                                       ┌──────▼──────┐
-                                       │  Postgres   │
-                                       └─────────────┘
+└───────────────┘         └────────┬─────────────────┬───────────────┘
+                                   │ async SQLAlchemy │ Transit encrypt/decrypt
+                            ┌──────▼──────┐    ┌──────▼───────┐
+                            │  Postgres   │    │ Vault (Transit)│
+                            │ users/keys/ │    │  token key never│
+                            │ connections │    │  leaves Vault   │
+                            └─────────────┘    └────────────────┘
 ```
 
 **Layering.** The codebase keeps a strict separation of concerns:
@@ -240,13 +294,15 @@ Planned `docker compose` services:
 | Service | Image / role | Always running? |
 |---|---|---|
 | `db` | Postgres 16 | Yes |
+| `vault` | HashiCorp Vault (dev) — Transit engine encrypts Jira tokens | Yes |
 | `backend` | FastAPI + uvicorn | Yes |
 | `frontend` | React (Vite dev server in dev; static bundle in prod) | Yes |
 | `digest` | NHI Blog Digest batch job (bonus) | **No** — one-shot via `docker compose run --rm digest` |
 
-Steady state is **3 long-running containers**; the digest is a batch job that
+Steady state is **4 long-running containers**; the digest is a batch job that
 runs and exits, so no idle container is kept for it (satisfies "any
-trigger/scheduled can work").
+trigger/scheduled can work"). Set `CRYPTO_BACKEND=local` to drop Vault and run
+with 3 (AES-GCM with an env key) — useful for Vault-free environments.
 
 **Decision — separate `frontend` container vs backend-served bundle:** we keep a
 separate `frontend` container in dev for Vite hot-reload and a visibly clean
@@ -262,10 +318,11 @@ conflated, all linked by one `user_id`:
 
 ```
 Layer 1 — App login (humans)
-  email + password → server-side session → httpOnly cookie
+  password (default) OR OIDC via a hosted IdP (e.g. Auth0)
+  → server-side session → httpOnly cookie
 
 Layer 2 — Jira connection (per user, set once after login)
-  Jira email + API token + site URL → AES-GCM encrypted in DB
+  Jira email + API token + site URL → Vault-Transit (or AES-GCM) encrypted in DB
   IdentityHub calls Jira *on the user's behalf*
 
 Layer 3 — IdentityHub API keys (machines)
@@ -299,7 +356,7 @@ restructuring.
 | Table | Purpose | Sensitive fields & handling |
 |---|---|---|
 | `users` | App accounts | `password_hash` (argon2id) — never the password |
-| `jira_connections` | A user's Jira credential | `api_token_ciphertext` + `api_token_nonce` (AES-256-GCM) — never plaintext |
+| `jira_connections` | A user's Jira credential | `api_token_ciphertext` (Vault Transit `vault:v1:…` by default, or AES-256-GCM + `api_token_nonce` locally) — never plaintext |
 | `api_keys` | IdentityHub keys for `/api/v1` | `key_hash` (SHA-256) + `key_prefix` for display — plaintext shown once |
 | `sessions` | Server-side sessions | opaque id is the cookie value; deleting the row revokes instantly |
 
@@ -349,16 +406,28 @@ Each choice below is something a reviewer might ask "why?" about.
 > and is the only component that calls the Jira REST API. The browser only ever
 > sees IdentityHub endpoints — credentials never reach the client.
 
-### Auth: email + password with server-side sessions (not JWT, not OAuth)
-- **Password over magic-link / social login** for the app itself: zero external
-  dependencies (no SMTP, no Google client config) so the reviewer can run it
-  immediately, *and* it lets us demonstrate secure password handling (argon2id,
-  timing-equalized login) — which is part of what's being graded.
-- **Server-side sessions over JWT**: logout and expiry must revoke access
-  *immediately*. A stateless JWT can't be revoked without extra
-  denylist machinery; deleting a `sessions` row is simpler and strictly safer
-  for a credential-handling product. The cookie is `httpOnly`, `SameSite=Lax`,
-  and `Secure` in production.
+### App login: server-side sessions, with OIDC (hosted IdP) or password
+- **Server-side sessions over JWT** (always): logout and expiry must revoke
+  access *immediately*. A stateless JWT can't be revoked without extra denylist
+  machinery; deleting a `sessions` row is simpler and strictly safer for a
+  credential-handling product. The cookie is `httpOnly`, `SameSite=Lax`, and
+  `Secure` in production. **This session layer is identical regardless of how
+  the user authenticated** — the login method only changes how we *establish*
+  the session.
+- **OIDC via a hosted IdP (e.g. Auth0) when configured** — the production path.
+  Authorization Code flow + PKCE (Authlib), endpoints discovered from the
+  provider's `/.well-known/openid-configuration`. On callback we validate the
+  token, upsert a local user by the IdP `sub` claim, and start our normal
+  session. SSO/MFA/deprovisioning become the IdP's responsibility, and `org`/
+  `groups` claims map cleanly onto the future `tenant_id`.
+- **Password fallback when OIDC isn't configured** — keeps `docker compose up`
+  and the test suite running with zero external dependencies, and demonstrates
+  secure password handling (argon2id, timing-equalized login). The mode is
+  chosen by config presence (`OIDC_ISSUER`/`CLIENT_ID`/`CLIENT_SECRET`); when
+  OIDC is on, the password endpoints return `403`.
+- **Pluggable boundary:** only `routers/auth.py` (login establishment) and the
+  `users` table (`idp_issuer`/`idp_subject` vs `password_hash`) differ between
+  modes; `deps.py`, sessions, and every other router are untouched.
 
 ### Jira auth: API token (Basic) over OAuth 2.0 3LO
 - An API token + email is **runnable by the reviewer in two minutes** — create
@@ -370,6 +439,31 @@ Each choice below is something a reviewer might ask "why?" about.
   revocable). The token model here is encapsulated behind `JiraClient` and the
   `jira_connections` table, so swapping in OAuth later means changing how the
   credential is obtained/refreshed, not the rest of the app.
+
+### Credential encryption: Vault Transit (default), pluggable backend
+- The reversible secret we must protect is the **Jira API token** (we need the
+  plaintext to call Jira). The naive approach — AES in the app with the key in an
+  env var — means anyone who can read the process environment can decrypt every
+  tenant's token. That's the weakness Vault removes.
+- **Default backend is HashiCorp Vault's Transit engine** (encryption-as-a-
+  service): the backend asks Vault to encrypt/decrypt, and the key material
+  never leaves Vault. We store the `vault:v1:…` ciphertext; decryption is a
+  just-in-time round-trip when building a Jira request.
+- **Pluggable by design.** Both backends live behind `encrypt()`/`decrypt()` in
+  `app/security/crypto.py`, selected by `CRYPTO_BACKEND`. Nothing else in the
+  app (routers, services, ORM) knows which is active — the abstraction boundary
+  was chosen so the secret backend is swappable. `local` (AES-256-GCM) is the
+  fallback for Vault-free runs and tests.
+- **Trade-offs / caveats:**
+  - Vault **dev mode is in-memory and auto-unsealed** — a restart loses the
+    Transit key, making stored tokens undecryptable. Fine to *demonstrate* the
+    integration; production runs Vault with persistent storage and a real
+    unseal/auth flow (e.g. AppRole instead of a root token).
+  - Switching `CRYPTO_BACKEND` after tokens are stored makes existing
+    ciphertext undecryptable (different key custodians) — same caveat as a key
+    rotation; users would re-connect Jira.
+  - A cloud **KMS** (AWS/GCP) is an equally valid production choice and would
+    drop into the same interface.
 
 ### Recent-tickets view: Jira is the single source of truth (label-based)
 - Requirement #3 asks for tickets *"created from this app"* — Jira has no native
@@ -453,9 +547,14 @@ call.
 - **Passwords**: argon2id (memory-hard, current OWASP recommendation). Login
   runs a dummy verify when the email is unknown so response timing doesn't leak
   which emails are registered.
-- **Jira tokens**: AES-256-GCM (authenticated encryption) with a fresh random
-  96-bit nonce per record. The master key comes from `APP_ENCRYPTION_KEY` in the
-  environment — never stored in the DB or source.
+- **Jira tokens**: encrypted at rest via **HashiCorp Vault's Transit engine**
+  by default — the encryption key never leaves Vault and never enters this
+  process; we store only the self-describing `vault:v1:…` ciphertext. A `local`
+  backend (AES-256-GCM, fresh 96-bit nonce per record, key from
+  `APP_ENCRYPTION_KEY`) is available for Vault-free runs and the test suite.
+  Either way the plaintext token exists only transiently in memory, just long
+  enough to build the Basic-auth header for a Jira request. See the design
+  decision below.
 - **API keys**: high-entropy random `ih_live_…` values; only a SHA-256 hash and
   a short display prefix are stored. Plaintext is returned exactly once.
 - **Sessions**: opaque server-side ids in `httpOnly` + `SameSite=Lax` cookies,
@@ -476,8 +575,11 @@ call.
 ### UI (session cookie auth)
 | Method | Path | Description |
 |---|---|---|
-| POST | `/auth/register` | Create account, start session |
-| POST | `/auth/login` | Log in |
+| GET | `/auth/config` | Which login mode is active (`oidc_enabled`) — drives the login UI |
+| POST | `/auth/register` | Create account, start session (password mode only; `403` under SSO) |
+| POST | `/auth/login` | Log in (password mode only; `403` under SSO) |
+| GET | `/auth/oidc/login` | Begin SSO — redirects to the IdP (OIDC mode only) |
+| GET | `/auth/oidc/callback` | IdP redirect target — establishes the session |
 | POST | `/auth/logout` | Log out (revoke session) |
 | GET | `/auth/me` | Current user + Jira-connected flag |
 | POST | `/jira/connect` | Verify & store Jira credentials |
@@ -544,6 +646,8 @@ the living source of truth — every change to the project updates it here.
 
 | Date | Decision | Rationale | Status |
 |---|---|---|---|
+| 2026-06-09 | **OIDC login via a hosted IdP (Auth0)** with Authlib; password auth kept as the no-config fallback | Federated SSO/MFA/deprovisioning; provider-agnostic via OIDC discovery. Session layer unchanged — only `auth.py` + `users` table differ between modes | ✅ implemented (builds + 33 tests green; live SSO pending Auth0 client creds) |
+| 2026-06-09 | **Vault Transit is the default credential-encryption backend** (hvac); `local` AES-GCM kept as a pluggable fallback | Encryption key never leaves Vault, removing the "key in env" weakness; backend selected by `CRYPTO_BACKEND` behind `crypto.py`. Dev-mode in-memory caveat documented | ✅ implemented & verified live (`vault:v1:…` stored, create/decrypt against real Jira) |
 | 2026-06-09 | **Jira is the single source of truth** — dropped the local `finding_tickets` table; recent view is a label-based Jira search | No drift, no stale mirror. Trade-offs (eventual consistency, workspace-wide label, no source flag) documented; UI optimistically shows new tickets | ✅ implemented & verified live |
 | 2026-06-09 | Create-finding fields: custom labels, priority (best-effort), due date, NHI context in description; issue type fixed to `Task` | Richer findings while staying portable across projects; no fragile custom-field mapping | ✅ implemented & verified live |
 | 2026-06-09 | Frontend: React + Vite + TS, single typed API client; project chosen from a backend-fed dropdown | Frontend never calls Jira directly — all Jira access is proxied through the backend, which holds the credential | ✅ implemented (builds clean) |

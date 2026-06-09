@@ -1,13 +1,19 @@
-"""AES-256-GCM encryption for Jira API tokens at rest.
+"""Encryption for Jira API tokens at rest.
 
-GCM is authenticated encryption: tampering with the ciphertext is detected on
-decrypt. A fresh random 96-bit nonce is generated per encryption and stored
-alongside the ciphertext (nonces need not be secret, only unique per key).
+Two pluggable backends behind one interface (``encrypt`` / ``decrypt``):
 
-The master key comes from APP_ENCRYPTION_KEY. We derive a stable 32-byte key
-from it via SHA-256 so any sufficiently-long passphrase works in dev, while a
-proper 32-byte secret should be supplied in production.
+- **vault** (default): HashiCorp Vault's Transit engine performs the
+  encryption — the key material never leaves Vault and never touches this
+  process. We store the self-describing ``vault:v1:...`` ciphertext.
+- **local**: AES-256-GCM with a key derived from ``APP_ENCRYPTION_KEY``. No
+  external dependency; used by the test suite and for Vault-free local runs.
+
+The backend is chosen by ``CRYPTO_BACKEND``. The rest of the app is unaware of
+which is active: ``client_for()`` and the ORM models are unchanged. The
+interface returns/accepts ``(ciphertext: bytes, nonce: bytes)``; the Vault
+backend leaves ``nonce`` empty (its ciphertext is self-contained).
 """
+import base64
 import hashlib
 import os
 
@@ -18,20 +24,97 @@ from app.config import get_settings
 _NONCE_BYTES = 12
 
 
-def _key() -> bytes:
+# --------------------------------------------------------------------------- #
+# Local AES-256-GCM backend
+# --------------------------------------------------------------------------- #
+def _local_key() -> bytes:
     raw = get_settings().app_encryption_key.encode("utf-8")
     return hashlib.sha256(raw).digest()  # 32 bytes
 
 
-def encrypt(plaintext: str) -> tuple[bytes, bytes]:
-    """Return (ciphertext, nonce)."""
+def _local_encrypt(plaintext: str) -> tuple[bytes, bytes]:
     nonce = os.urandom(_NONCE_BYTES)
-    aesgcm = AESGCM(_key())
-    ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+    ciphertext = AESGCM(_local_key()).encrypt(nonce, plaintext.encode("utf-8"), None)
     return ciphertext, nonce
 
 
+def _local_decrypt(ciphertext: bytes, nonce: bytes) -> str:
+    return AESGCM(_local_key()).decrypt(nonce, ciphertext, None).decode("utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Vault Transit backend (encryption-as-a-service)
+# --------------------------------------------------------------------------- #
+_vault_client = None
+
+
+def _vault():
+    """Lazily build the hvac client so the dependency is only imported/needed
+    when the Vault backend is actually in use."""
+    global _vault_client
+    if _vault_client is None:
+        import hvac  # imported lazily
+
+        s = get_settings()
+        _vault_client = hvac.Client(url=s.vault_addr, token=s.vault_token)
+    return _vault_client
+
+
+def _vault_encrypt(plaintext: str) -> tuple[bytes, bytes]:
+    s = get_settings()
+    resp = _vault().secrets.transit.encrypt_data(
+        name=s.vault_transit_key,
+        plaintext=base64.b64encode(plaintext.encode("utf-8")).decode("utf-8"),
+        mount_point=s.vault_transit_mount,
+    )
+    ciphertext = resp["data"]["ciphertext"]  # "vault:v1:..."
+    return ciphertext.encode("utf-8"), b""  # nonce unused for this backend
+
+
+def _vault_decrypt(ciphertext: bytes, nonce: bytes) -> str:
+    s = get_settings()
+    resp = _vault().secrets.transit.decrypt_data(
+        name=s.vault_transit_key,
+        ciphertext=ciphertext.decode("utf-8"),
+        mount_point=s.vault_transit_mount,
+    )
+    return base64.b64decode(resp["data"]["plaintext"]).decode("utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# Public interface
+# --------------------------------------------------------------------------- #
+def _use_vault() -> bool:
+    return get_settings().crypto_backend == "vault"
+
+
+def encrypt(plaintext: str) -> tuple[bytes, bytes]:
+    """Return (ciphertext, nonce). nonce is empty for the Vault backend."""
+    return _vault_encrypt(plaintext) if _use_vault() else _local_encrypt(plaintext)
+
+
 def decrypt(ciphertext: bytes, nonce: bytes) -> str:
-    aesgcm = AESGCM(_key())
-    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-    return plaintext.decode("utf-8")
+    return (
+        _vault_decrypt(ciphertext, nonce)
+        if _use_vault()
+        else _local_decrypt(ciphertext, nonce)
+    )
+
+
+def ensure_ready() -> None:
+    """Startup hook. For the Vault backend, make sure the Transit engine is
+    mounted and the encryption key exists (both idempotent). No-op for local."""
+    if not _use_vault():
+        return
+    s = get_settings()
+    client = _vault()
+    try:
+        client.sys.enable_secrets_engine(
+            backend_type="transit", path=s.vault_transit_mount
+        )
+    except Exception:
+        pass  # already enabled
+    # Creating an existing transit key is a safe no-op in Vault.
+    client.secrets.transit.create_key(
+        name=s.vault_transit_key, mount_point=s.vault_transit_mount
+    )

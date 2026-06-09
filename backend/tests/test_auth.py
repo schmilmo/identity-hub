@@ -54,3 +54,11 @@ def test_short_password_rejected(client):
 
 def test_me_requires_auth(client):
     assert client.get("/auth/me").status_code == 401
+
+
+def test_auth_config_reports_password_mode(client):
+    # With no OIDC env configured (the test default), the app advertises
+    # password login and password endpoints work.
+    cfg = client.get("/auth/config").json()
+    assert cfg["oidc_enabled"] is False
+    assert cfg["login_url"] is None

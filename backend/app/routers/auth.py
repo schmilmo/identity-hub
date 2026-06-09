@@ -6,6 +6,7 @@ expiry delete the row, revoking access immediately (unlike a stateless JWT).
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,15 @@ from app.security.tokens import generate_session_id
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+
+
+def _reject_if_oidc() -> None:
+    """Password endpoints are disabled when the app is configured for OIDC."""
+    if settings.oidc_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This deployment uses SSO. Log in via /auth/oidc/login.",
+        )
 
 # A precomputed argon2 hash used to equalize timing when the email is unknown,
 # so login does not leak which emails are registered.
@@ -63,6 +73,7 @@ async def _to_user_response(db: AsyncSession, user: User) -> UserResponse:
 async def register(
     body: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
+    _reject_if_oidc()
     existing = await db.execute(select(User).where(User.email == body.email))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(
@@ -84,6 +95,7 @@ async def register(
 async def login(
     body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
+    _reject_if_oidc()
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
@@ -122,3 +134,88 @@ async def logout(
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     return await _to_user_response(db, user)
+
+
+# --------------------------------------------------------------------------- #
+# Auth mode discovery + OIDC (hosted IdP) login
+# --------------------------------------------------------------------------- #
+@router.get("/config")
+async def auth_config():
+    """Lets the frontend decide what login UI to show: the SSO button when an
+    IdP is configured, otherwise the email/password form."""
+    return {
+        "oidc_enabled": settings.oidc_enabled,
+        "login_url": "/auth/oidc/login" if settings.oidc_enabled else None,
+    }
+
+
+@router.get("/oidc/login")
+async def oidc_login(request: Request):
+    """Begin the Authorization Code flow: redirect the browser to the IdP."""
+    if not settings.oidc_enabled:
+        raise HTTPException(status_code=404, detail="OIDC is not configured.")
+    from app.security import oidc
+
+    return await oidc.provider().authorize_redirect(request, settings.oidc_redirect_uri)
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(request: Request, db: AsyncSession = Depends(get_db)):
+    """IdP redirect target: validate the token, upsert the user, start a session,
+    then bounce back to the frontend."""
+    if not settings.oidc_enabled:
+        raise HTTPException(status_code=404, detail="OIDC is not configured.")
+    from app.security import oidc
+
+    try:
+        token = await oidc.provider().authorize_access_token(request)
+    except Exception as exc:  # invalid state, exchange failure, etc.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"SSO login failed: {exc}",
+        ) from exc
+
+    claims = token.get("userinfo") or {}
+    subject = claims.get("sub")
+    if not subject:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO response missing subject claim.",
+        )
+    issuer = settings.oidc_issuer.rstrip("/")
+    email = claims.get("email") or f"{subject}@oidc.local"
+
+    user = await _upsert_oidc_user(db, issuer, subject, email)
+
+    session_id = await _create_session(db, user.id)
+    redirect = RedirectResponse(url=settings.oidc_post_login_redirect, status_code=302)
+    _set_session_cookie(redirect, session_id)
+    return redirect
+
+
+async def _upsert_oidc_user(
+    db: AsyncSession, issuer: str, subject: str, email: str
+) -> User:
+    # 1) Match by the stable IdP identity.
+    result = await db.execute(
+        select(User).where(User.idp_issuer == issuer, User.idp_subject == subject)
+    )
+    user = result.scalar_one_or_none()
+    if user is not None:
+        return user
+
+    # 2) Link to an existing account with the same email (e.g. legacy password).
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        user.idp_issuer = issuer
+        user.idp_subject = subject
+        await db.commit()
+        return user
+
+    # 3) Provision a fresh IdP-backed user (no local password).
+    user = User(email=email, idp_issuer=issuer, idp_subject=subject)
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user

@@ -6,6 +6,17 @@
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
+// Full URL for the OIDC login redirect (a top-level browser navigation, not a
+// fetch — the backend 302s to the IdP).
+export function oidcLoginUrl(): string {
+  return `${API_BASE}/auth/oidc/login`;
+}
+
+export interface AuthConfig {
+  oidc_enabled: boolean;
+  login_url: string | null;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -115,6 +126,7 @@ export const api = {
     request<User>("POST", "/auth/login", { email, password }),
   logout: () => request<void>("POST", "/auth/logout"),
   me: () => request<User>("GET", "/auth/me"),
+  authConfig: () => request<AuthConfig>("GET", "/auth/config"),
 
   // jira
   connectJira: (site_url: string, jira_email: string, api_token: string) =>

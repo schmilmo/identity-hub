@@ -18,19 +18,52 @@ services:
       timeout: 3s
       retries: 10
 
+  # HashiCorp Vault (dev mode) — Transit engine encrypts Jira tokens; the key
+  # never leaves Vault. NOTE: dev mode is in-memory and auto-unsealed, so a
+  # restart loses the key (and makes stored tokens undecryptable). Production
+  # would run Vault with persistent storage and a real unseal/auth flow.
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    command: server -dev
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     depends_on:
       db:
         condition: service_healthy
+      vault:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://identityhub:identityhub@db:5432/identityhub
-      # For a real deployment, set a stable 32-byte secret. This dev default is
-      # intentionally weak and must be overridden outside local use.
+      # Vault Transit is the default credential-encryption backend.
+      CRYPTO_BACKEND: ${CRYPTO_BACKEND:-vault}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      # Only used if CRYPTO_BACKEND=local. Intentionally weak dev default.
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-dev-only-insecure-key-change-me-please}
       FRONTEND_ORIGIN: http://localhost:5173
       SECURE_COOKIES: "false"
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # OIDC / hosted IdP (e.g. Auth0). Leave unset to use password login.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8000/auth/oidc/callback}
+      OIDC_POST_LOGIN_REDIRECT: ${OIDC_POST_LOGIN_REDIRECT:-http://localhost:5173/}
+      OIDC_STATE_SECRET: ${OIDC_STATE_SECRET:-dev-only-oidc-state-secret-change-me}
     ports:
       - "8000:8000"
 
@@ -50,8 +83,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      vault:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://identityhub:identityhub@db:5432/identityhub
+      CRYPTO_BACKEND: ${CRYPTO_BACKEND:-vault}
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-dev-only-insecure-key-change-me-please}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       DIGEST_USER_EMAIL: ${DIGEST_USER_EMAIL:-}

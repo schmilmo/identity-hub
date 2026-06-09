@@ -13,10 +13,12 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.database import init_db
 from app.routers import api_keys, auth, external_api, findings, jira
+from app.security import crypto
 
 settings = get_settings()
 
@@ -24,6 +26,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    crypto.ensure_ready()  # Vault backend: ensure transit engine + key exist
     yield
 
 
@@ -38,6 +41,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Authlib stores the short-lived OAuth state/nonce/PKCE verifier in a signed
+# session cookie during the redirect dance. Only needed when OIDC is enabled.
+if settings.oidc_enabled:
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.oidc_state_secret,
+        same_site="lax",
+        https_only=settings.secure_cookies,
+    )
 
 
 @app.exception_handler(RequestValidationError)

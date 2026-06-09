@@ -305,6 +305,22 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* ---- SSO ---- */
+.sso {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 8px;
+}
+.sso-btn {
+  display: inline-block;
+  text-align: center;
+  text-decoration: none;
+}
+.sso-btn:hover {
+  text-decoration: none;
+}
+
 /* ---- Tabs ---- */
 .tabs {
   display: flex;

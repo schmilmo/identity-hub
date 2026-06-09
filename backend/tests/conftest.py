@@ -12,6 +12,8 @@ import pathlib
 _TEST_DB = pathlib.Path(__file__).parent / "test_app.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_DB}"
 os.environ["APP_ENCRYPTION_KEY"] = "test-encryption-key-deterministic-but-fine"
+# Tests use the local AES-GCM backend so they need no Vault container.
+os.environ["CRYPTO_BACKEND"] = "local"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

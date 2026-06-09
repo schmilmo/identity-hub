@@ -8,7 +8,7 @@ later without restructuring.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -24,10 +24,17 @@ def _now() -> datetime:
 
 class User(Base):
     __tablename__ = "users"
+    # A user authenticates either by local password OR via an IdP (idp_subject),
+    # never relevant to the other. Exactly one is populated per user.
+    __table_args__ = (UniqueConstraint("idp_issuer", "idp_subject"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    # Null for IdP-provisioned users (no local password).
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set for OIDC users: the IdP's issuer + stable subject claim.
+    idp_issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    idp_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     jira_connection: Mapped["JiraConnection | None"] = relationship(
