@@ -8,13 +8,7 @@ later without restructuring.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import (
-    DateTime,
-    ForeignKey,
-    String,
-    Text,
-    UniqueConstraint,
-)
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -99,26 +93,3 @@ class Session(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-
-
-class FindingTicket(Base):
-    """Local record of every NHI ticket created through this app.
-
-    Source of truth for the "recent tickets" view (Requirement #3), which
-    must show tickets *created from this app* — Jira has no native way to
-    express that filter without a marker. We scope by user_id for tenancy.
-    """
-
-    __tablename__ = "finding_tickets"
-    __table_args__ = (UniqueConstraint("user_id", "jira_issue_key"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    jira_project_key: Mapped[str] = mapped_column(String(50), index=True)
-    jira_issue_key: Mapped[str] = mapped_column(String(50))  # e.g. NHI-42
-    jira_issue_url: Mapped[str] = mapped_column(Text)
-    title: Mapped[str] = mapped_column(Text)
-    source: Mapped[str] = mapped_column(String(10), default="ui")  # "ui" | "api"
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

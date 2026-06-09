@@ -1,5 +1,10 @@
 """Shared business logic for Jira connections and finding tickets, used by
-both the UI router and the external REST API so the two stay consistent."""
+both the UI router and the external REST API so the two stay consistent.
+
+Jira is the single source of truth for finding tickets: we create issues there
+(stamped with the APP_LABEL marker) and read the "recent" list back via search.
+There is no local mirror of tickets.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,7 +13,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import FindingTicket, JiraConnection, User
+from app.models import JiraConnection, User
+from app.schemas import CreateFindingRequest
 from app.security.crypto import decrypt
 from app.services.jira_client import JiraClient, JiraError
 
@@ -45,49 +51,85 @@ def map_jira_error(exc: JiraError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message)
 
 
+def _compose_description(req: CreateFindingRequest) -> str:
+    """Fold the free-text description and the NHI-specific context fields into a
+    single structured description. These fields have no portable native Jira
+    mapping, so we render them as a readable block instead."""
+    parts: list[str] = []
+    if req.description and req.description.strip():
+        parts.append(req.description.strip())
+
+    context = [
+        ("Affected resource", req.resource),
+        ("Finding category", req.category),
+        ("Environment", req.environment),
+        ("Last activity", req.last_activity),
+    ]
+    context_lines = [f"- {label}: {value}" for label, value in context if value]
+    if context_lines:
+        if parts:
+            parts.append("")  # blank line between description and the block
+        parts.append("NHI Finding Details:")
+        parts.extend(context_lines)
+
+    return "\n".join(parts) if parts else "(no description)"
+
+
 async def create_finding(
-    db: AsyncSession,
-    user: User,
-    project_key: str,
-    title: str,
-    description: str,
-    source: str,
-) -> FindingTicket:
-    """Create the Jira issue and persist a local record. Shared by UI + API."""
+    db: AsyncSession, user: User, req: CreateFindingRequest
+) -> dict:
+    """Create the Jira issue. Returns the created issue's key/url/labels.
+    No local persistence — Jira owns the record."""
     conn = await get_connection_or_409(db, user)
     client = client_for(conn)
 
     try:
-        result = await client.create_issue(project_key, title, description)
+        result = await client.create_issue(
+            project_key=req.project_key,
+            summary=req.title,
+            description=_compose_description(req),
+            labels=req.labels,
+            priority=req.priority,
+            due_date=req.due_date.isoformat() if req.due_date else None,
+        )
     except JiraError as exc:
         raise map_jira_error(exc) from exc
 
-    ticket = FindingTicket(
-        user_id=user.id,
-        jira_project_key=project_key,
-        jira_issue_key=result["key"],
-        jira_issue_url=result["url"],
-        title=title,
-        source=source,
-    )
-    db.add(ticket)
-
+    # Refresh the connection's "last verified" stamp on a successful call.
     conn.last_verified_at = datetime.now(timezone.utc)
     await db.commit()
-    await db.refresh(ticket)
-    return ticket
+
+    return {
+        "jira_issue_key": result["key"],
+        "jira_issue_url": result["url"],
+        "title": req.title,
+        "project_key": req.project_key,
+        "labels": result["labels"],
+        # Server time; the authoritative timestamp is Jira's, seen on next refresh.
+        "created_at": datetime.now(timezone.utc),
+    }
 
 
 async def recent_findings(
     db: AsyncSession, user: User, project_key: str, limit: int = 10
-) -> list[FindingTicket]:
-    result = await db.execute(
-        select(FindingTicket)
-        .where(
-            FindingTicket.user_id == user.id,
-            FindingTicket.jira_project_key == project_key,
-        )
-        .order_by(FindingTicket.created_at.desc())
-        .limit(limit)
-    )
-    return list(result.scalars().all())
+) -> list[dict]:
+    """The most recent IdentityHub-created issues for a project, read from Jira."""
+    conn = await get_connection_or_409(db, user)
+    client = client_for(conn)
+
+    try:
+        issues = await client.search_app_issues(project_key, limit=limit)
+    except JiraError as exc:
+        raise map_jira_error(exc) from exc
+
+    return [
+        {
+            "jira_issue_key": i["key"],
+            "jira_issue_url": i["url"],
+            "title": i["title"],
+            "project_key": project_key,
+            "labels": i["labels"],
+            "created_at": i["created"],  # ISO string; pydantic coerces to datetime
+        }
+        for i in issues
+    ]

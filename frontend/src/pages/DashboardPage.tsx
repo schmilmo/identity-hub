@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type JiraConnection, type JiraProject } from "../api/client";
+import {
+  api,
+  ApiError,
+  type FindingTicket,
+  type JiraConnection,
+  type JiraProject,
+} from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import JiraConnectionPanel from "../components/JiraConnectionPanel";
 import CreateFindingForm from "../components/CreateFindingForm";
@@ -12,7 +18,13 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<JiraProject[]>([]);
   const [projectKey, setProjectKey] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [pending, setPending] = useState<FindingTicket | null>(null);
   const [error, setError] = useState("");
+
+  function onCreated(ticket: FindingTicket) {
+    setPending(ticket); // show immediately despite Jira's search-index lag
+    setRefreshKey((k) => k + 1);
+  }
 
   // Load connection + projects whenever the connected flag flips.
   const load = useCallback(async () => {
@@ -65,11 +77,15 @@ export default function DashboardPage() {
               projects={projects}
               projectKey={projectKey}
               onProjectKeyChange={setProjectKey}
-              onCreated={() => setRefreshKey((k) => k + 1)}
+              onCreated={onCreated}
             />
           </div>
           <div className="col">
-            <RecentTickets projectKey={projectKey} refreshKey={refreshKey} />
+            <RecentTickets
+              projectKey={projectKey}
+              refreshKey={refreshKey}
+              pending={pending}
+            />
           </div>
         </>
       )}

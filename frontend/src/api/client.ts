@@ -75,8 +75,23 @@ export interface FindingTicket {
   jira_issue_url: string;
   title: string;
   project_key: string;
-  source: string;
+  labels: string[];
   created_at: string;
+}
+
+export const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"] as const;
+
+export interface CreateFindingPayload {
+  project_key: string;
+  title: string;
+  description?: string;
+  labels?: string[];
+  priority?: string | null;
+  due_date?: string | null; // YYYY-MM-DD
+  resource?: string | null;
+  category?: string | null;
+  environment?: string | null;
+  last_activity?: string | null;
 }
 
 export interface ApiKey {
@@ -113,12 +128,8 @@ export const api = {
   listProjects: () => request<JiraProject[]>("GET", "/jira/projects"),
 
   // findings
-  createFinding: (project_key: string, title: string, description: string) =>
-    request<FindingTicket>("POST", "/findings", {
-      project_key,
-      title,
-      description,
-    }),
+  createFinding: (payload: CreateFindingPayload) =>
+    request<FindingTicket>("POST", "/findings", payload),
   recentFindings: (projectKey: string) =>
     request<FindingTicket[]>(
       "GET",

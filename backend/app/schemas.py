@@ -1,6 +1,7 @@
 """Pydantic request/response models. Keeps the API contract explicit and
 separate from the ORM layer."""
-from datetime import datetime
+import re
+from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -50,10 +51,50 @@ class JiraProject(BaseModel):
 
 
 # ---- Findings ----
+# Jira priority names (standard scheme). Severity of an NHI finding maps here.
+JIRA_PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"]
+
+
 class CreateFindingRequest(BaseModel):
     project_key: str = Field(min_length=1, max_length=50)
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(default="", max_length=30000)
+
+    # User-supplied labels (the 'identityhub' marker is added server-side).
+    labels: list[str] = Field(default_factory=list, max_length=20)
+
+    # Best-effort: only applied if the target project exposes a priority field.
+    priority: str | None = None
+
+    # Remediation deadline (Jira `duedate`).
+    due_date: date | None = None
+
+    # NHI-specific context. No native Jira fields map cleanly across projects,
+    # so these are rendered into a structured description template instead.
+    resource: str | None = Field(default=None, max_length=255)
+    category: str | None = Field(default=None, max_length=100)
+    environment: str | None = Field(default=None, max_length=100)
+    last_activity: str | None = Field(default=None, max_length=100)
+
+    @field_validator("labels")
+    @classmethod
+    def clean_labels(cls, labels: list[str]) -> list[str]:
+        # Jira labels cannot contain spaces; normalize to hyphens and drop blanks.
+        cleaned = []
+        for raw in labels:
+            label = re.sub(r"\s+", "-", raw.strip())
+            if label:
+                cleaned.append(label)
+        return cleaned
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if v not in JIRA_PRIORITIES:
+            raise ValueError(f"priority must be one of {JIRA_PRIORITIES}")
+        return v
 
 
 class FindingTicketResponse(BaseModel):
@@ -61,7 +102,7 @@ class FindingTicketResponse(BaseModel):
     jira_issue_url: str
     title: str
     project_key: str
-    source: str
+    labels: list[str] = Field(default_factory=list)
     created_at: datetime
 
 

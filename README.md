@@ -111,20 +111,29 @@ Open <http://localhost:5173>.
    a clear message explaining what to fix.
 
 3. **Report an NHI finding.** In **New NHI finding**:
-   - **Project** — pick one of your workspace projects from the dropdown, or
-     just type a project key (e.g. `NHI`).
+   - **Project** — a dropdown populated from your Jira workspace (fetched when
+     the dashboard loads), showing `KEY — Name` for each project.
    - **Title** — the summary, e.g. `Stale Service Account: svc-deploy-prod`.
    - **Description** — details about the finding (optional).
+   - **Priority** — optional; maps the finding's severity to Jira priority.
+     Applied best-effort (some team-managed projects don't expose priority — if
+     so, Jira's error is surfaced clearly).
+   - **Due date** — optional remediation deadline.
+   - **Labels** — type a label and press Enter to add your own (e.g. `aws`,
+     `prod`). Spaces are converted to hyphens. The `identityhub` marker label is
+     always added automatically (and is shown as a fixed chip).
+   - **NHI context** (optional, collapsible) — affected resource, category,
+     environment, last activity. These are folded into the ticket description.
 
    Submit to create the Jira issue. A confirmation shows the new issue key
-   (e.g. `NHI-42`). The issue is also tagged in Jira with the `identityhub` and
-   `nhi-finding` labels.
+   (e.g. `SAM1-42`).
 
 4. **Review recent findings.** The **Recent findings** panel lists the 10 most
    recent tickets *created through IdentityHub* for the selected project,
-   newest first, with their creation time. Click any row to open the issue in
-   Jira in a new tab. Tickets created by an external system via the API are
-   marked **via API**.
+   newest first, read **live from Jira** (filtered by the `identityhub` label).
+   Each row shows the creation time and any custom labels, and links to the Jira
+   issue in a new tab. A just-created ticket appears immediately even though
+   Jira's search index lags a moment behind.
 
 5. **Issue API keys for automation (optional).** Go to **API Keys** in the top
    nav to let scanners / CI pipelines file findings programmatically:
@@ -293,7 +302,11 @@ restructuring.
 | `jira_connections` | A user's Jira credential | `api_token_ciphertext` + `api_token_nonce` (AES-256-GCM) — never plaintext |
 | `api_keys` | IdentityHub keys for `/api/v1` | `key_hash` (SHA-256) + `key_prefix` for display — plaintext shown once |
 | `sessions` | Server-side sessions | opaque id is the cookie value; deleting the row revokes instantly |
-| `finding_tickets` | Local record of tickets created via the app | scoped by `user_id`; source of truth for the "recent" view |
+
+> **Finding tickets are not stored locally.** Jira is the single source of
+> truth — issues are created there (stamped with the `identityhub` label) and
+> the "recent findings" view reads them back via Jira search. See the design
+> decision below.
 
 ---
 
@@ -327,9 +340,14 @@ Each choice below is something a reviewer might ask "why?" about.
 - **`src/pages/`** — `LoginPage` (login/register toggle), `DashboardPage`
   (orchestrates the Jira panel + create form + recent tickets), `ApiKeysPage`.
 - **`src/components/`** — presentational pieces: `JiraConnectionPanel`,
-  `CreateFindingForm` (project field is a datalist so the user can pick *or*
-  type a project key — Requirement: "selects / writes a Jira project"),
-  `RecentTickets` (links each issue to Jira in a new tab), `Layout`, `Alert`.
+  `CreateFindingForm` (project field is a dropdown populated from the workspace,
+  fetched via the backend on dashboard load), `RecentTickets` (links each issue
+  to Jira in a new tab), `Layout`, `Alert`.
+
+> **The frontend never talks to Jira directly.** Every Jira interaction goes
+> through the backend (`/jira/*`, `/findings`), which holds the encrypted token
+> and is the only component that calls the Jira REST API. The browser only ever
+> sees IdentityHub endpoints — credentials never reach the client.
 
 ### Auth: email + password with server-side sessions (not JWT, not OAuth)
 - **Password over magic-link / social login** for the app itself: zero external
@@ -353,21 +371,46 @@ Each choice below is something a reviewer might ask "why?" about.
   `jira_connections` table, so swapping in OAuth later means changing how the
   credential is obtained/refreshed, not the rest of the app.
 
-### Recent-tickets view: a local table, *plus* a Jira label
+### Recent-tickets view: Jira is the single source of truth (label-based)
 - Requirement #3 asks for tickets *"created from this app"* — Jira has no native
-  way to express that filter. We persist a `finding_tickets` row for every
-  ticket we create (the source of truth for the list: fast, always available,
-  unambiguously scoped per tenant) **and** stamp each Jira issue with an
-  `identityhub` label so it's identifiable inside Jira too.
-- **Trade-off:** the local record can drift if a ticket is deleted directly in
-  Jira. Acceptable for a POC; a production version would reconcile via the label
-  + JQL.
+  way to express that filter, so every issue we create is stamped with the
+  `identityhub` **marker label**. The "recent findings" view is a live Jira
+  search: `project = X AND labels = identityhub ORDER BY created DESC` (top 10).
+- **We deliberately keep no local copy of tickets.** Jira owns the data; there's
+  no mirror table to fall out of sync, no drift if an issue is edited or deleted
+  in Jira, and the list always reflects reality.
+- **Trade-offs (accepted, documented):**
+  - *Eventual consistency* — Jira's search index lags issue creation by ~1–2s,
+    so a brand-new ticket might not be in the search results immediately. The UI
+    compensates by optimistically showing the just-created ticket until the next
+    refresh confirms it.
+  - *The marker label is workspace-wide* — with 1 user = 1 Jira account (each
+    its own token), a user's search runs as their own Jira identity, so they
+    only see what that account can. But the label itself doesn't encode *which*
+    IdentityHub user created an issue; two IdentityHub users sharing one Jira
+    account would see each other's app-created tickets. Fine for this tenancy
+    model; a future multi-user-per-tenant design could add a per-tenant label.
+  - *No `source` (ui/api) attribution* — that lived in the dropped local table.
+    Could be re-added as a second label (e.g. `nhi-via-api`) if needed.
+
+### Create-finding fields
+- **Always sent:** title (summary), description, and the `identityhub` marker
+  label. **Issue type is fixed to `Task`** — a documented scope choice (a
+  production version would read the project's available types from Jira's
+  createmeta and let the user pick).
+- **User-controllable:** custom **labels** (validated — Jira labels can't have
+  spaces, so they're normalized to hyphens), **priority** (best-effort; mapped
+  to the standard Jira priority scheme), and a **due date**.
+- **NHI-specific context** (affected resource, category, environment, last
+  activity) has no portable native Jira field, so it's rendered into a
+  structured **description template** rather than fragile per-project custom
+  fields — keeping the integration portable across any Jira project.
 
 ### Shared service layer for UI and API
 - `findings_service.create_finding()` is the single code path for ticket
   creation. The UI router and the external API router both call it (differing
-  only in `source="ui"` vs `"api"` and their auth dependency), guaranteeing
-  identical validation, tenancy, and Jira behavior.
+  only in their auth dependency), guaranteeing identical validation, tenancy,
+  and Jira behavior.
 
 ### Why not the `jira` Python package?
 
@@ -419,7 +462,9 @@ call.
   `Secure` in production; revocable by row deletion.
 - **Multi-tenancy**: every tenant-scoped query filters on `user_id`. Cross-tenant
   object access (e.g. revoking someone else's API key) returns `404`, not `403`,
-  so existence isn't leaked.
+  so existence isn't leaked. Finding tickets aren't stored locally — each user's
+  recent-findings search runs against *their own* Jira connection, so isolation
+  for tickets is enforced by Jira itself.
 - **Validation**: Pydantic schemas validate all input; a custom handler returns a
   single readable `detail` message for both humans and machines.
 - **Secrets** live in environment variables (`.env`), never committed.
@@ -453,20 +498,42 @@ call.
 `409` means no Jira workspace is connected for the key's owner; `502` means Jira
 itself rejected the request (e.g. stored credentials were revoked).
 
+#### Finding request body (`POST /findings` and `POST /api/v1/findings`)
+
+```jsonc
+{
+  "project_key": "SAM1",                 // required
+  "title": "Stale Service Account: svc-deploy-prod",  // required
+  "description": "No activity in 90 days.",
+  "labels": ["aws", "prod"],             // 'identityhub' marker added server-side
+  "priority": "High",                    // Highest|High|Medium|Low|Lowest (best-effort)
+  "due_date": "2026-07-15",              // YYYY-MM-DD
+  "resource": "svc-deploy-prod",         // NHI context → description
+  "category": "Stale service account",
+  "environment": "aws-prod",
+  "last_activity": "2026-03-01"
+}
+```
+
+Response (both endpoints) returns the created issue: `jira_issue_key`,
+`jira_issue_url`, `title`, `project_key`, `labels`, `created_at`.
+
 ---
 
 ## Assumptions & scope
 
 - **1 user = 1 tenant**, with one Jira connection per user. Documented above;
   the schema anticipates a future `tenant_id`.
-- **Issue type is `Task`** with labels `identityhub`, `nhi-finding`. A real
-  integration would let the user pick the project's available issue types and
-  map NHI severity to priority/custom fields.
+- **Jira is the single source of truth for tickets** — no local copy. The
+  "recent" view is a live Jira search on the `identityhub` marker label. (See
+  the design decision for the eventual-consistency and label-scope trade-offs.)
+- **Issue type is `Task`.** A production integration would read the project's
+  available issue types from createmeta and let the user pick.
+- **Priority is best-effort** — applied only if the target project exposes a
+  priority field; otherwise Jira's error is surfaced.
 - **Projects list shows the first 50** (no pagination) — sufficient for a POC.
 - **Jira Cloud only** (REST API v3, always HTTPS). Jira Server/Data Center uses a
   different auth model and isn't targeted.
-- The **recent-tickets list** reflects tickets created *through this app*, not
-  all tickets in the project (by design — matches the requirement).
 
 ---
 
@@ -477,13 +544,15 @@ the living source of truth — every change to the project updates it here.
 
 | Date | Decision | Rationale | Status |
 |---|---|---|---|
-| 2026-06-09 | Frontend: React + Vite + TS, single typed API client, datalist project picker | Strict-typed wiring, errors surfaced from backend `detail`, picker supports select-or-type | ✅ implemented (builds clean) |
+| 2026-06-09 | **Jira is the single source of truth** — dropped the local `finding_tickets` table; recent view is a label-based Jira search | No drift, no stale mirror. Trade-offs (eventual consistency, workspace-wide label, no source flag) documented; UI optimistically shows new tickets | ✅ implemented & verified live |
+| 2026-06-09 | Create-finding fields: custom labels, priority (best-effort), due date, NHI context in description; issue type fixed to `Task` | Richer findings while staying portable across projects; no fragile custom-field mapping | ✅ implemented & verified live |
+| 2026-06-09 | Frontend: React + Vite + TS, single typed API client; project chosen from a backend-fed dropdown | Frontend never calls Jira directly — all Jira access is proxied through the backend, which holds the credential | ✅ implemented (builds clean) |
 | 2026-06-09 | Backend stack: FastAPI + async SQLAlchemy + Postgres | Async fits the Jira-fan-out workload; real RDBMS for a credible multi-tenancy story | ✅ implemented & smoke-tested |
 | 2026-06-09 | Three-layer identity model (session / encrypted Jira token / hashed API key) | Separation of credentials, least privilege, independent revocation | ✅ implemented |
 | 2026-06-09 | Hand-written async Jira client over the `jira` SDK | Async fit, tiny surface area, error-message control, reviewability | ✅ implemented |
 | 2026-06-09 | SQLite for tests, Postgres for the app | Fast container-free tests; portable via the ORM. TZ-normalization guard added in `deps.py` | ✅ implemented |
 | 2026-06-09 | Docker Compose stack (Postgres + backend + frontend) as the primary run path | "Frictionless to run" — `docker compose up --build`, verified end-to-end against live Postgres | ✅ implemented |
-| 2026-06-09 | Test suite on SQLite with a mocked Jira client (28 tests) | No network/Postgres needed; covers auth, findings, external API, and cross-tenant isolation | ✅ implemented (28 passing) |
+| 2026-06-09 | Test suite on SQLite with an in-memory fake Jira (32 tests) | No network/Postgres needed; covers auth, findings, labels/priority/context, external API, and cross-tenant isolation | ✅ implemented (32 passing) |
 | 2026-06-09 | 3 long-running containers; `frontend` stays a separate Vite container | Hot-reload + visibly clean UI/backend split. Documented that prod could serve the bundle from the backend for a 2-container, single-origin setup | ✅ resolved |
 | 2026-06-09 | Digest (bonus) runs as a one-shot container behind a Compose profile | It's a batch job; no reason to idle a container. Started via `docker compose run --rm digest` | ⏳ planned |
 

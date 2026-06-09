@@ -2,15 +2,20 @@ import { useEffect, useState } from "react";
 import { api, ApiError, type FindingTicket } from "../api/client";
 import Alert from "./Alert";
 
-// The 10 most recent app-created tickets for the selected project. Each row
-// links to the Jira issue in a new tab. `refreshKey` re-fetches when bumped
-// (e.g. after a new ticket is created).
+const MARKER = "identityhub";
+
+// The 10 most recent app-created tickets for the selected project, read live
+// from Jira (filtered by the IdentityHub marker label). `refreshKey` re-fetches
+// when bumped. Because Jira's search index is eventually consistent, a freshly
+// created ticket (`pending`) is merged on top until the fetch catches up.
 export default function RecentTickets({
   projectKey,
   refreshKey,
+  pending,
 }: {
   projectKey: string;
   refreshKey: number;
+  pending: FindingTicket | null;
 }) {
   const [tickets, setTickets] = useState<FindingTicket[]>([]);
   const [error, setError] = useState("");
@@ -43,6 +48,15 @@ export default function RecentTickets({
     };
   }, [projectKey, refreshKey]);
 
+  // Merge the optimistic ticket if Jira's search hasn't surfaced it yet.
+  const keys = new Set(tickets.map((t) => t.jira_issue_key));
+  const display =
+    pending &&
+    pending.project_key === projectKey &&
+    !keys.has(pending.jira_issue_key)
+      ? [pending, ...tickets]
+      : tickets;
+
   return (
     <div className="card">
       <div className="card-head">
@@ -56,24 +70,30 @@ export default function RecentTickets({
       <Alert kind="error">{error}</Alert>
       {loading && <p className="muted">Loading…</p>}
 
-      {projectKey && !loading && tickets.length === 0 && !error && (
+      {projectKey && !loading && display.length === 0 && !error && (
         <p className="muted">
           No findings reported through IdentityHub for {projectKey} yet.
         </p>
       )}
 
-      {tickets.length > 0 && (
+      {display.length > 0 && (
         <ul className="ticket-list">
-          {tickets.map((t) => (
+          {display.map((t) => (
             <li key={t.jira_issue_key}>
               <a href={t.jira_issue_url} target="_blank" rel="noreferrer">
                 <span className="ticket-key">{t.jira_issue_key}</span>
                 <span className="ticket-title">{t.title}</span>
               </a>
-              <span className="ticket-meta">
-                {new Date(t.created_at).toLocaleString()}
-                {t.source === "api" && <span className="tag">via API</span>}
-              </span>
+              <div className="ticket-meta">
+                <span>{new Date(t.created_at).toLocaleString()}</span>
+                {t.labels
+                  .filter((l) => l !== MARKER)
+                  .map((l) => (
+                    <span key={l} className="tag">
+                      {l}
+                    </span>
+                  ))}
+              </div>
             </li>
           ))}
         </ul>

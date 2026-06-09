@@ -7,9 +7,16 @@ instead of leaking raw upstream payloads.
 """
 from __future__ import annotations
 
+import urllib.parse
+
 import httpx
 
 _TIMEOUT = httpx.Timeout(15.0)
+
+# Marker label stamped on every issue created through IdentityHub. It is how
+# the "recent findings" view identifies app-created tickets — Jira is the sole
+# source of truth, so this label *is* the query key (no local mirror table).
+APP_LABEL = "identityhub"
 
 
 class JiraError(Exception):
@@ -75,41 +82,45 @@ class JiraClient:
         return resp.json().get("values", [])
 
     async def create_issue(
-        self, project_key: str, summary: str, description: str
+        self,
+        project_key: str,
+        summary: str,
+        description: str,
+        labels: list[str] | None = None,
+        priority: str | None = None,
+        due_date: str | None = None,
     ) -> dict:
-        """Create an Issue. Returns {key, url}. We add an 'identityhub' label
-        so tickets are identifiable inside Jira as well as in our local store.
+        """Create an Issue. Returns {key, url, labels}.
+
+        The APP_LABEL marker is always added (and de-duplicated against any
+        user labels). Issue type is fixed to "Task" (documented scope choice).
+        ``priority`` is best-effort: many team-managed projects don't expose a
+        priority field, in which case Jira returns a 400 we surface verbatim.
 
         Description uses the Atlassian Document Format (ADF) required by v3.
         """
-        payload = {
-            "fields": {
-                "project": {"key": project_key},
-                "summary": summary,
-                "issuetype": {"name": "Task"},
-                "labels": ["identityhub", "nhi-finding"],
-                "description": {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [
-                        {
-                            "type": "paragraph",
-                            "content": [
-                                {"type": "text", "text": description or "(no description)"}
-                            ],
-                        }
-                    ],
-                },
-            }
+        # Marker label first, then user labels, de-duplicated, order-preserving.
+        all_labels = list(dict.fromkeys([APP_LABEL, *(labels or [])]))
+
+        fields: dict = {
+            "project": {"key": project_key},
+            "summary": summary,
+            "issuetype": {"name": "Task"},
+            "labels": all_labels,
+            "description": _adf_from_text(description or "(no description)"),
         }
-        resp = await self._request("POST", "/issue", json=payload)
+        if priority:
+            fields["priority"] = {"name": priority}
+        if due_date:
+            fields["duedate"] = due_date  # YYYY-MM-DD
+
+        resp = await self._request("POST", "/issue", json={"fields": fields})
 
         if resp.status_code == 400:
-            # Most commonly: bad project key or issue type not available.
+            # Most commonly: bad project key, unsupported issue type, or a
+            # field (e.g. priority) the project doesn't accept.
             detail = _extract_error(resp)
-            raise JiraError(
-                f"Jira rejected the issue: {detail}", status=400
-            )
+            raise JiraError(f"Jira rejected the issue: {detail}", status=400)
         if resp.status_code != 201:
             raise JiraError(
                 f"Could not create Jira issue (HTTP {resp.status_code}).",
@@ -118,7 +129,69 @@ class JiraClient:
 
         data = resp.json()
         key = data["key"]
-        return {"key": key, "url": f"https://{self._site_url}/browse/{key}"}
+        return {
+            "key": key,
+            "url": f"https://{self._site_url}/browse/{key}",
+            "labels": all_labels,
+        }
+
+    async def search_app_issues(self, project_key: str, limit: int = 10) -> list[dict]:
+        """Return the most recent IdentityHub-created issues for a project.
+
+        Jira is the source of truth: we query by the APP_LABEL marker rather
+        than a local table. Note Jira's search index is eventually consistent,
+        so a just-created issue may take a moment to appear here.
+        """
+        jql = (
+            f'project = "{project_key}" AND labels = "{APP_LABEL}" '
+            f"ORDER BY created DESC"
+        )
+        params = {
+            "jql": jql,
+            "maxResults": str(limit),
+            "fields": "summary,created,labels",
+        }
+        query = urllib.parse.urlencode(params)
+        resp = await self._request("GET", f"/search/jql?{query}")
+
+        if resp.status_code == 400:
+            raise JiraError(
+                f"Jira rejected the search: {_extract_error(resp)}", status=400
+            )
+        if resp.status_code != 200:
+            raise JiraError(
+                f"Could not search Jira issues (HTTP {resp.status_code}).",
+                status=502,
+            )
+
+        issues = resp.json().get("issues", [])
+        results = []
+        for issue in issues:
+            f = issue.get("fields", {})
+            key = issue["key"]
+            results.append(
+                {
+                    "key": key,
+                    "url": f"https://{self._site_url}/browse/{key}",
+                    "title": f.get("summary", ""),
+                    "created": f.get("created"),
+                    "labels": f.get("labels", []),
+                }
+            )
+        return results
+
+
+def _adf_from_text(text: str) -> dict:
+    """Build an Atlassian Document Format doc from plain text, mapping each
+    line to its own paragraph so multi-line descriptions render readably."""
+    lines = text.split("\n")
+    content = []
+    for line in lines:
+        para: dict = {"type": "paragraph", "content": []}
+        if line:  # ADF paragraphs must omit empty text nodes
+            para["content"].append({"type": "text", "text": line})
+        content.append(para)
+    return {"type": "doc", "version": 1, "content": content}
 
 
 def _extract_error(resp: httpx.Response) -> str:

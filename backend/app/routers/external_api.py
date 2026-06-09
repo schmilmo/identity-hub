@@ -50,14 +50,5 @@ async def create_finding(
           -H "Content-Type: application/json" \\
           -d '{"project_key":"NHI","title":"Stale SA: svc-deploy","description":"..."}'
     """
-    ticket = await findings_service.create_finding(
-        db, user, body.project_key, body.title, body.description, source="api"
-    )
-    return FindingTicketResponse(
-        jira_issue_key=ticket.jira_issue_key,
-        jira_issue_url=ticket.jira_issue_url,
-        title=ticket.title,
-        project_key=ticket.jira_project_key,
-        source=ticket.source,
-        created_at=ticket.created_at,
-    )
+    result = await findings_service.create_finding(db, user, body)
+    return FindingTicketResponse(**result)

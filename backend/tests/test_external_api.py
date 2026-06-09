@@ -18,12 +18,11 @@ def test_create_finding_via_api(client):
         json={"project_key": "NHI", "title": "Scanner finding", "description": "d"},
     )
     assert resp.status_code == 201, resp.text
-    assert resp.json()["source"] == "api"
+    assert "identityhub" in resp.json()["labels"]
 
-    # Shows up in the UI's recent list — same store, same tenant.
+    # Shows up in the UI's recent list — same Jira workspace.
     recent = client.get("/findings", params={"project_key": "NHI"}).json()
     assert recent[0]["title"] == "Scanner finding"
-    assert recent[0]["source"] == "api"
 
 
 def test_missing_authorization_header(client):

@@ -13,17 +13,18 @@ def _client():
 
 
 def test_findings_isolated_between_users(client):
-    # User A
+    # Each user connects their OWN Jira workspace (distinct site). Isolation is
+    # enforced by Jira: a user's search runs against their own connection.
     register(client, email="a@example.com")
-    connect_jira(client, email="a@example.com")
+    connect_jira(client, site="acme-a.atlassian.net", email="a@example.com")
     client.post(
         "/findings", json={"project_key": "NHI", "title": "A-secret", "description": ""}
     )
 
-    # User B — separate session.
+    # User B — separate session, separate Jira site.
     with _client() as b:
         register(b, email="b@example.com")
-        connect_jira(b, email="b@example.com")
+        connect_jira(b, site="acme-b.atlassian.net", email="b@example.com")
         recent_b = b.get("/findings", params={"project_key": "NHI"}).json()
         # B must not see A's ticket even though both use project "NHI".
         assert recent_b == []
@@ -58,14 +59,14 @@ def test_cannot_revoke_another_users_api_key(client):
 
 
 def test_api_key_routes_other_tenants_finding_to_correct_owner(client):
-    # A's API key must create tickets under A, never B.
+    # A's API key must create tickets under A's Jira, never B's.
     register(client, email="a@example.com")
-    connect_jira(client, email="a@example.com")
+    connect_jira(client, site="acme-a.atlassian.net", email="a@example.com")
     a_key = client.post("/api-keys", json={"name": "a"}).json()["api_key"]
 
     with _client() as b:
         register(b, email="b@example.com")
-        connect_jira(b, email="b@example.com")
+        connect_jira(b, site="acme-b.atlassian.net", email="b@example.com")
 
         # Use A's key while holding B's session cookie.
         b.post(

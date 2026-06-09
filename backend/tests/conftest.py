@@ -32,12 +32,16 @@ def fresh_db():
 
 @pytest.fixture(autouse=True)
 def mock_jira(monkeypatch):
-    """Replace Jira network calls with in-process fakes.
+    """Replace Jira network calls with an in-memory fake Jira.
 
-    Patching the methods on the class object covers every call site, since
-    both the routers and the service layer reference the same JiraClient.
+    Issues are stored keyed by site_url, so two users on *different* Jira
+    sites are isolated, while the same site is shared — mirroring real Jira
+    and letting us test tenancy without a network. Patching the methods on the
+    class object covers every call site (routers and service layer).
     """
     counter = itertools.count(1)
+    # site_url -> list of stored issues (most-recent-last)
+    store: dict[str, list[dict]] = {}
 
     async def fake_verify(self):
         return {"accountId": "test-account"}
@@ -48,14 +52,45 @@ def mock_jira(monkeypatch):
             {"key": "SEC", "name": "Security"},
         ]
 
-    async def fake_create_issue(self, project_key, summary, description):
+    async def fake_create_issue(
+        self, project_key, summary, description,
+        labels=None, priority=None, due_date=None,
+    ):
+        all_labels = list(dict.fromkeys([jc.APP_LABEL, *(labels or [])]))
         n = next(counter)
         key = f"{project_key}-{n}"
-        return {"key": key, "url": f"https://{self._site_url}/browse/{key}"}
+        issue = {
+            "key": key,
+            "url": f"https://{self._site_url}/browse/{key}",
+            "title": summary,
+            "created": f"2026-06-09T12:00:{n:02d}+00:00",
+            "labels": all_labels,
+            "project_key": project_key,
+            "priority": priority,
+            "due_date": due_date,
+            "description": description,
+        }
+        store.setdefault(self._site_url, []).append(issue)
+        return {"key": key, "url": issue["url"], "labels": all_labels}
+
+    async def fake_search(self, project_key, limit=10):
+        issues = [
+            i
+            for i in store.get(self._site_url, [])
+            if i["project_key"] == project_key and jc.APP_LABEL in i["labels"]
+        ]
+        issues = list(reversed(issues))[:limit]  # newest first
+        return [
+            {k: i[k] for k in ("key", "url", "title", "created", "labels")}
+            for i in issues
+        ]
 
     monkeypatch.setattr(jc.JiraClient, "verify", fake_verify)
     monkeypatch.setattr(jc.JiraClient, "list_projects", fake_list_projects)
     monkeypatch.setattr(jc.JiraClient, "create_issue", fake_create_issue)
+    monkeypatch.setattr(jc.JiraClient, "search_app_issues", fake_search)
+    # Expose the store for tests that want to inspect what was sent to Jira.
+    return store
 
 
 @pytest.fixture
