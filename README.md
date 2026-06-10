@@ -91,7 +91,7 @@ defaults work for a local run.
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Set all three to enable SSO login (e.g. Auth0). Unset = email+password. |
 | `OIDC_REDIRECT_URI` | `…/auth/oidc/callback` | Must match an Allowed Callback URL at the IdP |
 | `NHI_FIELD_MAP` | — | Optional JSON mapping NHI context fields to Jira custom fields; unmapped fields fall back to the description |
-| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | Ollama / `llama3.2:1b` / — | Free LLM for the digest (OpenAI-compatible). Point at Groq/Gemini/etc. by overriding |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | Groq / `llama-3.1-8b-instant` / — | Free LLM for the digest (OpenAI-compatible). Set a free key, or point at Gemini/OpenRouter/self-hosted Ollama |
 | `DIGEST_INTERVAL_SECONDS` | `86400` | How often the digest runs |
 | _(digest targets)_ | — | Per-user: each user picks project(s) in the app (Report → NHI Blog Digest); no env needed |
 
@@ -316,12 +316,11 @@ Planned `docker compose` services:
 | `backend` | FastAPI + uvicorn | Yes |
 | `frontend` | React (Vite dev server in dev; static bundle in prod) | Yes |
 | `digest` | NHI Blog Digest periodic worker (bonus) | Only under the `digest` profile |
-| `ollama` | Free local LLM for the digest (bonus) | Only under the `digest` profile |
 
-Steady state is **5 long-running containers**. The bonus `digest` + `ollama`
-sit behind a Compose **profile**, so the default `up` stays lean and doesn't
-pull the large Ollama image; start them with `docker compose --profile digest
-up`. Set `CRYPTO_BACKEND=local` to drop Vault.
+Steady state is **5 long-running containers**. The bonus `digest` worker sits
+behind a Compose **profile**, so the default `up` stays lean; start it with
+`docker compose --profile digest up` (it calls a free hosted LLM, so no extra
+container). Set `CRYPTO_BACKEND=local` to drop Vault.
 
 **Decision — separate `frontend` container vs backend-served bundle:** we keep a
 separate `frontend` container in dev for Vite hot-reload and a visibly clean
@@ -737,6 +736,7 @@ project(s) you want digest tickets filed into. Stored in `digest_subscriptions`.
 
 **Run the worker:**
 ```bash
+# set a free LLM_API_KEY in .env (Groq free tier by default), then:
 docker compose --profile digest up --build
 ```
 
@@ -754,10 +754,10 @@ docker compose --profile digest up --build
   killing the loop. The post is fetched and summarized **once per cycle**, then
   filed across all subscriptions.
 - **Free, provider-agnostic LLM.** Summarization speaks the OpenAI-compatible
-  `chat/completions` shape, so it works with any provider by config: it defaults
-  to a bundled **Ollama** (local, free, no API key — the model is auto-pulled on
-  first run), and you can point `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` at a free
-  hosted endpoint (Groq, Gemini, OpenRouter) instead. No paid dependency.
+  `chat/completions` shape, so it works with any provider by config. It defaults
+  to **Groq's free tier** (set a free `LLM_API_KEY`); point
+  `LLM_BASE_URL`/`LLM_MODEL` at Gemini, OpenRouter, or a self-hosted Ollama
+  instead. No paid dependency, and no heavyweight model container in the stack.
 - **Dedup per (user, project).** The last-posted URL is stored in Redis keyed by
   user+project, so each subscribed project receives a given post exactly once.
 - **Same cross-link as UI/API findings.** Each digest ticket also gets the

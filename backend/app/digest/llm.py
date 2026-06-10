@@ -19,22 +19,6 @@ _SYSTEM = (
 )
 
 
-async def ensure_model() -> None:
-    """For Ollama, pull the model if it isn't present yet (no-op elsewhere).
-    Best-effort: failures are logged, not raised."""
-    s = get_settings()
-    if not s.llm_auto_pull or "11434" not in s.llm_base_url:
-        return
-    # Ollama's native pull endpoint sits at the host root, not under /v1.
-    host = s.llm_base_url.rstrip("/").removesuffix("/v1")
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
-            await client.post(f"{host}/api/pull", json={"name": s.llm_model})
-            log.info("Ensured Ollama model present: %s", s.llm_model)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Could not pre-pull model %s: %s", s.llm_model, exc)
-
-
 async def summarize(title: str, body: str) -> str:
     s = get_settings()
     content = (

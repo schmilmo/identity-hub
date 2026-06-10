@@ -35,13 +35,11 @@ class Settings(BaseSettings):
 
     # --- NHI Blog Digest bonus (separate worker; see app/digest) ---
     # Provider-agnostic LLM via an OpenAI-compatible /chat/completions endpoint.
-    # Defaults to a local Ollama (free, no key); point at Groq/Gemini/OpenRouter
-    # by changing these three. llm_api_key is omitted for keyless local models.
-    llm_base_url: str = "http://ollama:11434/v1"
-    llm_model: str = "llama3.2:1b"
+    # Defaults to Groq's free tier (set LLM_API_KEY); point at Gemini/OpenRouter
+    # or a self-hosted Ollama by changing these three.
+    llm_base_url: str = "https://api.groq.com/openai/v1"
+    llm_model: str = "llama-3.1-8b-instant"
     llm_api_key: str = ""
-    # Auto-pull the model on startup (Ollama only; no-op for hosted providers).
-    llm_auto_pull: bool = True
 
     digest_interval_seconds: int = 60 * 60 * 24  # daily
     digest_blog_url: str = "https://oasis.security/blog"

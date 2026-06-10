@@ -118,7 +118,6 @@ async def main() -> None:
         s.digest_interval_seconds, s.digest_blog_url, s.llm_base_url, s.llm_model,
     )
     await init_db()
-    await llm.ensure_model()
     while True:
         try:
             await run_once()

@@ -16,8 +16,8 @@ encryption; optional OIDC (Auth0) login.
 # Full stack (Postgres + Redis + Vault + backend + frontend)
 docker compose up --build          # UI :5173 · API :8000 (/docs) · Vault :8200
 
-# Bonus digest worker + local LLM (Ollama), behind a profile:
-docker compose --profile digest up --build   # needs DIGEST_USER_EMAIL/PROJECT_KEY
+# Bonus digest worker, behind a profile (uses a free hosted LLM — set LLM_API_KEY):
+docker compose --profile digest up --build
 
 # Backend tests (SQLite + mocked Jira; no Postgres/Vault/network needed)
 cd backend && .venv/bin/python -m pytest
@@ -129,8 +129,9 @@ frontend/src/
 ## Bonus: NHI Blog Digest
 - `app/digest/` — periodic worker (separate container, shared code). Fetch latest
   oasis.security/blog post → summarize once via a **free, provider-agnostic LLM**
-  (OpenAI-compatible `chat/completions`; default = bundled Ollama, no key;
-  override `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` for Groq/etc.) → file a ticket
+  (OpenAI-compatible `chat/completions`; default = Groq free tier, set
+  `LLM_API_KEY`; override `LLM_BASE_URL`/`LLM_MODEL` for Gemini/OpenRouter/Ollama)
+  → file a ticket
   for each **per-user subscription** (`digest_subscriptions`, set in UI: Report →
   NHI Blog Digest) under **that user's own** Jira connection. Dedup per
   (user, project) in Redis.
