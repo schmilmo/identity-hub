@@ -283,13 +283,13 @@ curl -X POST localhost:8000/api/v1/findings \
 ┌───────────────┐ Bearer  │  /findings create / list tickets   ─────┼──────►│ Jira Cloud │
 │ Scanner / CI  │  apikey  │  /api-keys manage external keys          │ httpx │ REST API   │
 │ (machines)    │◄───────►│  /api/v1   external machine API          │ Basic └────────────┘
-└───────────────┘         └────────┬─────────────────┬───────────────┘
-                                   │ async SQLAlchemy │ Transit encrypt/decrypt
-                            ┌──────▼──────┐    ┌──────▼───────┐
-                            │  Postgres   │    │ Vault (Transit)│
-                            │ users/keys/ │    │  token key never│
-                            │ connections │    │  leaves Vault   │
-                            └─────────────┘    └────────────────┘
+└───────────────┘     └──────┬───────────┬──────────────┬──────────────┘
+                             │ SQLAlchemy │ sessions     │ Transit
+                      ┌──────▼─────┐ ┌────▼────┐  ┌──────▼────────┐
+                      │  Postgres  │ │  Redis  │  │ Vault (Transit)│
+                      │ users/keys/│ │ session │  │ token key never│
+                      │ conns/subs │ │ id→user │  │ leaves Vault   │
+                      └────────────┘ └─────────┘  └────────────────┘
 ```
 
 **Layering.** The codebase keeps a strict separation of concerns:
@@ -438,10 +438,9 @@ Each choice below is something a reviewer might ask "why?" about.
   reviewer needs zero local DB setup.
 - **SQLite is used only for the test suite** (`aiosqlite`) — fast, no container
   required. The code stays portable across both because we use the async
-  SQLAlchemy ORM rather than raw SQL. The one engine difference we handle
-  explicitly: SQLite returns timezone-naive datetimes while Postgres returns
-  aware ones, so session-expiry comparison in `app/deps.py` normalizes naive
-  values to UTC (harmless on Postgres, required on SQLite).
+  SQLAlchemy ORM rather than raw SQL, and timestamps are stored timezone-aware
+  (`DateTime(timezone=True)`); SQLite returns them naive, so any datetime
+  comparison normalizes to UTC first.
 - **React + Vite + TypeScript**: fast scaffold, clear client/server boundary
   that satisfies the "separation between UI and backend layers" criterion.
 
@@ -459,7 +458,8 @@ Each choice below is something a reviewer might ask "why?" about.
 - **`src/components/`** — presentational pieces: `JiraConnectionPanel`,
   `CreateFindingForm` (project field is a dropdown populated from the workspace,
   fetched via the backend on dashboard load), `RecentTickets` (rows link to the
-  in-app detail page), `Layout`, `Alert`.
+  in-app detail page), `DigestPanel` (pick blog-digest projects), `Layout`,
+  `Alert`.
 
 > **The frontend never talks to Jira directly.** Every Jira interaction goes
 > through the backend (`/jira/*`, `/findings`), which holds the encrypted token
@@ -614,7 +614,7 @@ screen, and are configured per-project on team-managed projects. So mapping is
 
 ### Why not the `jira` Python package?
 
-We use a small hand-written async client (`app/services/jira_client.py`, ~120
+We use a small hand-written async client (`app/services/jira_client.py`, ~270
 lines) over the Jira REST API instead of a packaged SDK such as `jira` or
 `atlassian-python-api`. Reasons:
 
@@ -623,8 +623,9 @@ lines) over the Jira REST API instead of a packaged SDK such as `jira` or
    (`requests`-based); dropping it in would mean blocking calls inside async
    handlers or wrapping every call in `run_in_executor` — messier than the thin
    client we have.
-2. **Tiny surface area.** We need exactly three operations: verify credentials
-   (`/myself`), list projects, and create an issue. A general-purpose SDK pulls
+2. **Tiny surface area.** We use only a handful of endpoints — verify
+   credentials (`/myself`), list projects, create an issue, add a remote link,
+   search by label, and fetch one issue. A general-purpose SDK pulls
    in a large dependency wrapping dozens of endpoints we never call — more to
    audit and more supply-chain surface, which cuts against the security
    criterion being graded.
