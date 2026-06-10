@@ -53,7 +53,7 @@ external systems (scanners, CI/CD).
 ### Run everything with Docker Compose (recommended)
 
 ```bash
-# Build and start the stack (Postgres + Vault + backend + frontend).
+# Build and start the stack (Postgres + Redis + Vault + backend + frontend).
 docker compose up --build
 ```
 
@@ -220,11 +220,15 @@ The UI has three tabs: **Report** (connect Jira + create findings), **Findings**
 Useful for backend development with hot-reload.
 
 ```bash
-# Backend (needs a running Postgres, or point DATABASE_URL at SQLite)
+# Backend (needs a running Postgres + Redis; or point DATABASE_URL at SQLite).
+# Quick deps:  docker run -d -p 5432:5432 -e POSTGRES_USER=identityhub \
+#                -e POSTGRES_PASSWORD=identityhub -e POSTGRES_DB=identityhub postgres:16
+#              docker run -d -p 6379:6379 redis:7-alpine
 cd backend
 python -m venv .venv && source .venv/bin/activate   # Python 3.12 or 3.13
 pip install -r requirements.txt
 export DATABASE_URL="postgresql+asyncpg://identityhub:identityhub@localhost:5432/identityhub"
+export REDIS_URL="redis://localhost:6379/0"          # sessions live in Redis
 # Without a Vault instance, use the local AES-GCM backend:
 export CRYPTO_BACKEND=local
 export APP_ENCRYPTION_KEY="$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
