@@ -56,7 +56,7 @@ def mock_jira(monkeypatch):
 
     async def fake_create_issue(
         self, project_key, summary, description,
-        labels=None, priority=None, due_date=None,
+        labels=None, priority=None, extra_fields=None,
     ):
         all_labels = list(dict.fromkeys([jc.APP_LABEL, *(labels or [])]))
         n = next(counter)
@@ -69,11 +69,17 @@ def mock_jira(monkeypatch):
             "labels": all_labels,
             "project_key": project_key,
             "priority": priority,
-            "due_date": due_date,
             "description": description,
+            "extra_fields": extra_fields or {},
+            "remote_links": [],
         }
         store.setdefault(self._site_url, []).append(issue)
         return {"key": key, "url": issue["url"], "labels": all_labels}
+
+    async def fake_add_remote_link(self, issue_key, url, title):
+        for issue in store.get(self._site_url, []):
+            if issue["key"] == issue_key:
+                issue["remote_links"].append({"url": url, "title": title})
 
     async def fake_search(self, project_key, limit=10):
         issues = [
@@ -90,6 +96,7 @@ def mock_jira(monkeypatch):
     monkeypatch.setattr(jc.JiraClient, "verify", fake_verify)
     monkeypatch.setattr(jc.JiraClient, "list_projects", fake_list_projects)
     monkeypatch.setattr(jc.JiraClient, "create_issue", fake_create_issue)
+    monkeypatch.setattr(jc.JiraClient, "add_remote_link", fake_add_remote_link)
     monkeypatch.setattr(jc.JiraClient, "search_app_issues", fake_search)
     # Expose the store for tests that want to inspect what was sent to Jira.
     return store

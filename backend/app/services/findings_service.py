@@ -13,6 +13,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models import JiraConnection, User
 from app.schemas import CreateFindingRequest
 from app.security.crypto import decrypt
@@ -51,21 +52,58 @@ def map_jira_error(exc: JiraError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message)
 
 
-def _compose_description(req: CreateFindingRequest) -> str:
-    """Fold the free-text description and the NHI-specific context fields into a
-    single structured description. These fields have no portable native Jira
-    mapping, so we render them as a readable block instead."""
+# NHI context fields, with the label used in the description block.
+_NHI_CONTEXT = [
+    ("resource", "Affected resource"),
+    ("category", "Finding category"),
+    ("environment", "Environment"),
+    ("last_activity", "Last activity"),
+]
+
+
+def _format_custom_value(field_type: str, value):
+    """Shape a value for Jira per the mapped custom-field type."""
+    if field_type == "option":
+        return {"value": value}
+    if field_type == "array":
+        values = value if isinstance(value, list) else [value]
+        return [{"value": v} for v in values]
+    # text, date, and anything else: send the scalar as-is.
+    return value
+
+
+def build_custom_fields(
+    req: CreateFindingRequest, field_map: dict[str, dict]
+) -> tuple[dict, set[str]]:
+    """From the NHI_FIELD_MAP, build the Jira `fields` fragment for any NHI
+    context value that has a mapping. Returns (extra_fields, mapped_keys) so the
+    description can skip whatever was sent as a real field."""
+    values = {key: getattr(req, key) for key, _ in _NHI_CONTEXT}
+    extra: dict = {}
+    mapped: set[str] = set()
+    for key, spec in field_map.items():
+        value = values.get(key)
+        cf_id = (spec or {}).get("id")
+        if not value or not cf_id:
+            continue
+        extra[cf_id] = _format_custom_value(spec.get("type", "text"), value)
+        mapped.add(key)
+    return extra, mapped
+
+
+def _compose_description(req: CreateFindingRequest, exclude: set[str]) -> str:
+    """Fold the free-text description and the *unmapped* NHI context fields into
+    a single structured description. Fields sent as real custom fields (in
+    `exclude`) are omitted here to avoid duplication."""
     parts: list[str] = []
     if req.description and req.description.strip():
         parts.append(req.description.strip())
 
-    context = [
-        ("Affected resource", req.resource),
-        ("Finding category", req.category),
-        ("Environment", req.environment),
-        ("Last activity", req.last_activity),
+    context_lines = [
+        f"- {label}: {getattr(req, key)}"
+        for key, label in _NHI_CONTEXT
+        if getattr(req, key) and key not in exclude
     ]
-    context_lines = [f"- {label}: {value}" for label, value in context if value]
     if context_lines:
         if parts:
             parts.append("")  # blank line between description and the block
@@ -83,17 +121,31 @@ async def create_finding(
     conn = await get_connection_or_409(db, user)
     client = client_for(conn)
 
+    # Map NHI context to Jira custom fields where configured; the rest goes into
+    # the description (the portable default).
+    extra_fields, mapped = build_custom_fields(req, get_settings().field_map())
+
     try:
         result = await client.create_issue(
             project_key=req.project_key,
             summary=req.title,
-            description=_compose_description(req),
+            description=_compose_description(req, exclude=mapped),
             labels=req.labels,
             priority=req.priority,
-            due_date=req.due_date.isoformat() if req.due_date else None,
+            extra_fields=extra_fields or None,
         )
     except JiraError as exc:
         raise map_jira_error(exc) from exc
+
+    # Cross-reference: add a web link on the Jira issue back to IdentityHub so a
+    # user can jump from the ticket into the app (deep-linked to the project).
+    # Best-effort — a link failure must not undo a successfully created ticket.
+    settings = get_settings()
+    app_url = f"{settings.frontend_origin.rstrip('/')}/?project={req.project_key}"
+    try:
+        await client.add_remote_link(result["key"], app_url, "View in IdentityHub")
+    except JiraError:
+        pass
 
     # Refresh the connection's "last verified" stamp on a successful call.
     conn.last_verified_at = datetime.now(timezone.utc)

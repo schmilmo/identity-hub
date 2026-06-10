@@ -87,6 +87,7 @@ defaults work for a local run.
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | CORS origin allowed to send the session cookie |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Set all three to enable SSO login (e.g. Auth0). Unset = email+password. |
 | `OIDC_REDIRECT_URI` | `…/auth/oidc/callback` | Must match an Allowed Callback URL at the IdP |
+| `NHI_FIELD_MAP` | — | Optional JSON mapping NHI context fields to Jira custom fields; unmapped fields fall back to the description |
 | `ANTHROPIC_API_KEY` | — | For the bonus NHI Blog Digest |
 | `DIGEST_USER_EMAIL` / `DIGEST_PROJECT_KEY` | — | Target account + project for the bonus digest |
 
@@ -168,15 +169,17 @@ Open <http://localhost:5173>.
    - **Priority** — optional; maps the finding's severity to Jira priority.
      Applied best-effort (some team-managed projects don't expose priority — if
      so, Jira's error is surfaced clearly).
-   - **Due date** — optional remediation deadline.
    - **Labels** — type a label and press Enter to add your own (e.g. `aws`,
      `prod`). Spaces are converted to hyphens. The `identityhub` marker label is
      always added automatically (and is shown as a fixed chip).
    - **NHI context** (optional, collapsible) — affected resource, category,
-     environment, last activity. These are folded into the ticket description.
+     environment, and last activity (a date picker). These are folded into the
+     ticket description.
 
    Submit to create the Jira issue. A confirmation shows the new issue key
-   (e.g. `SAM1-42`).
+   (e.g. `SAM1-42`). The Jira issue also gets a **"View in IdentityHub"** web
+   link (a Jira *remote link*) that opens the app focused on that project — a
+   cross-reference back from Jira to the NHI platform.
 
 4. **Review recent findings.** The **Recent findings** panel lists the 10 most
    recent tickets *created through IdentityHub* for the selected project,
@@ -493,12 +496,52 @@ Each choice below is something a reviewer might ask "why?" about.
   production version would read the project's available types from Jira's
   createmeta and let the user pick).
 - **User-controllable:** custom **labels** (validated — Jira labels can't have
-  spaces, so they're normalized to hyphens), **priority** (best-effort; mapped
-  to the standard Jira priority scheme), and a **due date**.
-- **NHI-specific context** (affected resource, category, environment, last
-  activity) has no portable native Jira field, so it's rendered into a
-  structured **description template** rather than fragile per-project custom
-  fields — keeping the integration portable across any Jira project.
+  spaces, so they're normalized to hyphens) and **priority** (best-effort;
+  mapped to the standard Jira priority scheme). We deliberately *don't* expose
+  Jira-native scheduling fields like **due date** — that's a Jira-side workflow
+  concern, not an attribute of the NHI finding itself.
+- **NHI-specific context** (affected resource, category, environment, and a
+  last-activity date) has no portable native Jira field, so by default it's
+  rendered into a structured **description template** — keeping the integration
+  portable across any Jira project with zero Jira-side setup. It can optionally
+  be written to real Jira custom fields (see below).
+
+### NHI context → Jira custom fields (optional mapping)
+Jira custom fields aren't portable: they must be **created by an admin first**,
+are addressed by opaque ids (`customfield_10042`), must be on the project's
+screen, and are configured per-project on team-managed projects. So mapping is
+**opt-in**, not the default.
+
+- **Chosen: Option 1 — a deployment-level `NHI_FIELD_MAP` env var** (JSON). It
+  maps each NHI field to a Jira custom-field id + type:
+  ```json
+  {
+    "resource":      { "id": "customfield_10042", "type": "text" },
+    "category":      { "id": "customfield_10043", "type": "option" },
+    "environment":   { "id": "customfield_10044", "type": "text" },
+    "last_activity": { "id": "customfield_10045", "type": "date" }
+  }
+  ```
+  On create, mapped fields are sent as real Jira fields (the `type` controls the
+  value shape: `text`/`date` → scalar, `option` → `{"value": …}`, `array` →
+  `[{"value": …}]`); **anything unmapped falls back to the description**. A
+  malformed map fails soft (degrades to the description). Simple, no schema or
+  per-tenant plumbing — right for a POC where one Jira/project is in play.
+- **Possible enhancement: Option 2 — per-connection, project-scoped mapping in
+  the DB.** A JSON column on `jira_connections` keyed by project
+  (`{"SAM1": {...}, "KAN": {...}}`), edited via a settings screen, validated
+  against `createmeta`. This is the multi-tenant-correct shape (each tenant maps
+  their own fields per project) but costs a DB column, a config API/UI, and
+  validation — deferred as future work.
+
+### Cross-reference: Jira → IdentityHub
+- After creating an issue we attach a Jira **remote link** ("View in
+  IdentityHub") pointing to `<frontend>/?project=<KEY>`, so a user reading the
+  Jira ticket can jump straight back into the NHI platform (deep-linked to the
+  project). It's added **best-effort** — a link failure never undoes a
+  successfully created ticket. Combined with the `identityhub` label, this gives
+  a bidirectional reference: app→Jira (the issue link) and Jira→app (the remote
+  link).
 
 ### Shared service layer for UI and API
 - `findings_service.create_finding()` is the single code path for ticket
@@ -609,11 +652,10 @@ itself rejected the request (e.g. stored credentials were revoked).
   "description": "No activity in 90 days.",
   "labels": ["aws", "prod"],             // 'identityhub' marker added server-side
   "priority": "High",                    // Highest|High|Medium|Low|Lowest (best-effort)
-  "due_date": "2026-07-15",              // YYYY-MM-DD
   "resource": "svc-deploy-prod",         // NHI context → description
   "category": "Stale service account",
   "environment": "aws-prod",
-  "last_activity": "2026-03-01"
+  "last_activity": "2026-03-01"        // date (YYYY-MM-DD)
 }
 ```
 
@@ -649,7 +691,10 @@ the living source of truth — every change to the project updates it here.
 | 2026-06-09 | **OIDC login via a hosted IdP (Auth0)** with Authlib; password auth kept as the no-config fallback | Federated SSO/MFA/deprovisioning; provider-agnostic via OIDC discovery. Session layer unchanged — only `auth.py` + `users` table differ between modes | ✅ implemented (builds + 33 tests green; live SSO pending Auth0 client creds) |
 | 2026-06-09 | **Vault Transit is the default credential-encryption backend** (hvac); `local` AES-GCM kept as a pluggable fallback | Encryption key never leaves Vault, removing the "key in env" weakness; backend selected by `CRYPTO_BACKEND` behind `crypto.py`. Dev-mode in-memory caveat documented | ✅ implemented & verified live (`vault:v1:…` stored, create/decrypt against real Jira) |
 | 2026-06-09 | **Jira is the single source of truth** — dropped the local `finding_tickets` table; recent view is a label-based Jira search | No drift, no stale mirror. Trade-offs (eventual consistency, workspace-wide label, no source flag) documented; UI optimistically shows new tickets | ✅ implemented & verified live |
-| 2026-06-09 | Create-finding fields: custom labels, priority (best-effort), due date, NHI context in description; issue type fixed to `Task` | Richer findings while staying portable across projects; no fragile custom-field mapping | ✅ implemented & verified live |
+| 2026-06-10 | NHI context → Jira custom fields via **Option 1**: a deployment-level `NHI_FIELD_MAP` env JSON; description fallback for unmapped | Custom fields need admin setup + opaque ids + per-project config (team-managed), so mapping is opt-in. Env map is simplest; per-connection DB mapping (Option 2) noted as a future enhancement | ✅ implemented (unit-tested) |
+| 2026-06-10 | Cross-reference Jira→app via a "View in IdentityHub" remote link (deep-linked to `?project=KEY`); best-effort | Bidirectional reference (label app→Jira, remote link Jira→app); never blocks ticket creation | ✅ implemented |
+| 2026-06-10 | Dropped **due date** from the finding form; **last activity** is now a date picker | Due date is a Jira-side workflow concern, not an NHI finding attribute; last-activity is genuinely a date | ✅ implemented |
+| 2026-06-09 | Create-finding fields: custom labels, priority (best-effort), NHI context in description; issue type fixed to `Task` | Richer findings while staying portable across projects; no fragile custom-field mapping | ✅ implemented & verified live |
 | 2026-06-09 | Frontend: React + Vite + TS, single typed API client; project chosen from a backend-fed dropdown | Frontend never calls Jira directly — all Jira access is proxied through the backend, which holds the credential | ✅ implemented (builds clean) |
 | 2026-06-09 | Backend stack: FastAPI + async SQLAlchemy + Postgres | Async fits the Jira-fan-out workload; real RDBMS for a credible multi-tenancy story | ✅ implemented & smoke-tested |
 | 2026-06-09 | Three-layer identity model (session / encrypted Jira token / hashed API key) | Separation of credentials, least privilege, independent revocation | ✅ implemented |

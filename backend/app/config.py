@@ -3,6 +3,7 @@
 Secrets (encryption key, DB URL) live in the environment, never in the
 database or source. See .env.example for the full list.
 """
+import json
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,27 @@ class Settings(BaseSettings):
     @property
     def oidc_enabled(self) -> bool:
         return bool(self.oidc_issuer and self.oidc_client_id and self.oidc_client_secret)
+
+    # --- NHI context → Jira custom-field mapping (optional) ---
+    # Deployment-level JSON mapping each NHI context field to a Jira custom
+    # field id + type, e.g.:
+    #   NHI_FIELD_MAP='{"resource":{"id":"customfield_10042","type":"text"},
+    #                   "last_activity":{"id":"customfield_10045","type":"date"}}'
+    # Unmapped fields fall back to the description template. Empty = all in
+    # the description (the portable default).
+    nhi_field_map: str = ""
+
+    def field_map(self) -> dict[str, dict]:
+        """Parsed NHI_FIELD_MAP; returns {} if unset or malformed (fail soft —
+        a bad mapping degrades to the description rather than breaking creates)."""
+        raw = self.nhi_field_map.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
 
 
 @lru_cache

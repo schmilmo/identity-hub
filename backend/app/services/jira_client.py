@@ -88,7 +88,7 @@ class JiraClient:
         description: str,
         labels: list[str] | None = None,
         priority: str | None = None,
-        due_date: str | None = None,
+        extra_fields: dict | None = None,
     ) -> dict:
         """Create an Issue. Returns {key, url, labels}.
 
@@ -111,8 +111,9 @@ class JiraClient:
         }
         if priority:
             fields["priority"] = {"name": priority}
-        if due_date:
-            fields["duedate"] = due_date  # YYYY-MM-DD
+        if extra_fields:
+            # Pre-formatted Jira custom fields (keyed by customfield_XXXXX).
+            fields.update(extra_fields)
 
         resp = await self._request("POST", "/issue", json={"fields": fields})
 
@@ -134,6 +135,14 @@ class JiraClient:
             "url": f"https://{self._site_url}/browse/{key}",
             "labels": all_labels,
         }
+
+    async def add_remote_link(self, issue_key: str, url: str, title: str) -> None:
+        """Attach a web link on the issue (Jira "remote link") pointing back to
+        IdentityHub — the cross-reference that lets a user jump from the Jira
+        ticket into the app. Best-effort: callers ignore failures so a link
+        problem never blocks ticket creation."""
+        payload = {"object": {"url": url, "title": title}}
+        await self._request("POST", f"/issue/{issue_key}/remotelink", json=payload)
 
     async def search_app_issues(self, project_key: str, limit: int = 10) -> list[dict]:
         """Return the most recent IdentityHub-created issues for a project.

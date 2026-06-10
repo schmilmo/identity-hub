@@ -98,7 +98,6 @@ export interface CreateFindingPayload {
   description?: string;
   labels?: string[];
   priority?: string | null;
-  due_date?: string | null; // YYYY-MM-DD
   resource?: string | null;
   category?: string | null;
   environment?: string | null;

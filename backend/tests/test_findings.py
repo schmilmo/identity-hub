@@ -78,21 +78,25 @@ def test_nhi_context_rendered_into_description(client, mock_jira):
     assert "Environment: aws-prod" in sent
 
 
-def test_priority_and_due_date_forwarded(client, mock_jira):
+def test_priority_forwarded(client, mock_jira):
     register(client)
     connect_jira(client)
     client.post(
         "/findings",
-        json={
-            "project_key": "NHI",
-            "title": "t",
-            "priority": "High",
-            "due_date": "2026-07-01",
-        },
+        json={"project_key": "NHI", "title": "t", "priority": "High"},
     )
     sent = mock_jira["acme.atlassian.net"][-1]
     assert sent["priority"] == "High"
-    assert sent["due_date"] == "2026-07-01"
+
+
+def test_cross_reference_link_added(client, mock_jira):
+    register(client)
+    connect_jira(client)
+    client.post("/findings", json={"project_key": "NHI", "title": "t"})
+    links = mock_jira["acme.atlassian.net"][-1]["remote_links"]
+    assert len(links) == 1
+    assert links[0]["title"] == "View in IdentityHub"
+    assert "project=NHI" in links[0]["url"]
 
 
 def test_invalid_priority_rejected(client):

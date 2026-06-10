@@ -16,7 +16,11 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const [connection, setConnection] = useState<JiraConnection | null>(null);
   const [projects, setProjects] = useState<JiraProject[]>([]);
-  const [projectKey, setProjectKey] = useState("");
+  // Honor a ?project=KEY deep link (e.g. from the "View in IdentityHub" link on
+  // a Jira issue) so the dashboard opens focused on that project.
+  const [projectKey, setProjectKey] = useState(
+    () => new URLSearchParams(window.location.search).get("project") ?? "",
+  );
   const [refreshKey, setRefreshKey] = useState(0);
   const [pending, setPending] = useState<FindingTicket | null>(null);
   const [error, setError] = useState("");

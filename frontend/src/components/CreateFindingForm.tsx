@@ -28,7 +28,6 @@ export default function CreateFindingForm({
   const [labels, setLabels] = useState<string[]>([]);
   const [labelInput, setLabelInput] = useState("");
   const [priority, setPriority] = useState("");
-  const [dueDate, setDueDate] = useState("");
   // NHI context
   const [resource, setResource] = useState("");
   const [category, setCategory] = useState("");
@@ -61,7 +60,6 @@ export default function CreateFindingForm({
     setLabels([]);
     setLabelInput("");
     setPriority("");
-    setDueDate("");
     setResource("");
     setCategory("");
     setEnvironment("");
@@ -80,7 +78,6 @@ export default function CreateFindingForm({
         description,
         labels,
         priority: priority || null,
-        due_date: dueDate || null,
         resource: resource || null,
         category: category || null,
         environment: environment || null,
@@ -146,27 +143,17 @@ export default function CreateFindingForm({
           />
         </label>
 
-        <div className="field-row">
-          <label className="grow">
-            Priority
-            <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-              <option value="">— none —</option>
-              {PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grow">
-            Due date
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
-          </label>
-        </div>
+        <label>
+          Priority
+          <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+            <option value="">— none —</option>
+            {PRIORITIES.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <label>
           Labels
@@ -233,7 +220,7 @@ export default function CreateFindingForm({
             <label className="grow">
               Last activity
               <input
-                placeholder="2026-03-01"
+                type="date"
                 value={lastActivity}
                 onChange={(e) => setLastActivity(e.target.value)}
               />

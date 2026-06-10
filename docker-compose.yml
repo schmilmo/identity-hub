@@ -64,6 +64,9 @@ services:
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8000/auth/oidc/callback}
       OIDC_POST_LOGIN_REDIRECT: ${OIDC_POST_LOGIN_REDIRECT:-http://localhost:5173/}
       OIDC_STATE_SECRET: ${OIDC_STATE_SECRET:-dev-only-oidc-state-secret-change-me}
+      # Optional NHI context → Jira custom-field mapping (JSON). Empty = use the
+      # description template.
+      NHI_FIELD_MAP: ${NHI_FIELD_MAP:-}
     ports:
       - "8000:8000"
 

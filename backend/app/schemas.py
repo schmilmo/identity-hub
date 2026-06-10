@@ -1,7 +1,7 @@
 """Pydantic request/response models. Keeps the API contract explicit and
 separate from the ORM layer."""
 import re
-from datetime import date, datetime
+from datetime import datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -66,11 +66,9 @@ class CreateFindingRequest(BaseModel):
     # Best-effort: only applied if the target project exposes a priority field.
     priority: str | None = None
 
-    # Remediation deadline (Jira `duedate`).
-    due_date: date | None = None
-
     # NHI-specific context. No native Jira fields map cleanly across projects,
     # so these are rendered into a structured description template instead.
+    # last_activity is an ISO date string (YYYY-MM-DD) from a date picker.
     resource: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     environment: str | None = Field(default=None, max_length=100)
