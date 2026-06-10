@@ -56,7 +56,8 @@ external systems (scanners, CI/CD).
 docker compose up --build
 ```
 
-That's it — no config needed for a local run. Four services start:
+That's it — no config needed for a local run. Five services start (Postgres,
+Redis, Vault, backend, frontend):
 
 | URL | What |
 |---|---|
@@ -82,6 +83,7 @@ defaults work for a local run.
 | `VAULT_ADDR` / `VAULT_TOKEN` | Compose Vault / `root` | Vault address + token (used when `CRYPTO_BACKEND=vault`). |
 | `APP_ENCRYPTION_KEY` | weak dev placeholder | AES-256-GCM master key — **only used when `CRYPTO_BACKEND=local`**. Set a stable 32-byte secret for real use; rotating it makes stored tokens undecryptable. |
 | `DATABASE_URL` | Compose Postgres | Async SQLAlchemy connection string |
+| `REDIS_URL` | Compose Redis | Session store connection string |
 | `SESSION_TTL_SECONDS` | `604800` (7d) | Session lifetime |
 | `SECURE_COOKIES` | `false` | Set `true` behind HTTPS in production |
 | `FRONTEND_ORIGIN` | `http://localhost:5173` | CORS origin allowed to send the session cookie |
@@ -297,15 +299,15 @@ Planned `docker compose` services:
 | Service | Image / role | Always running? |
 |---|---|---|
 | `db` | Postgres 16 | Yes |
+| `redis` | Redis 7 — server-side session store | Yes |
 | `vault` | HashiCorp Vault (dev) — Transit engine encrypts Jira tokens | Yes |
 | `backend` | FastAPI + uvicorn | Yes |
 | `frontend` | React (Vite dev server in dev; static bundle in prod) | Yes |
 | `digest` | NHI Blog Digest batch job (bonus) | **No** — one-shot via `docker compose run --rm digest` |
 
-Steady state is **4 long-running containers**; the digest is a batch job that
+Steady state is **5 long-running containers**; the digest is a batch job that
 runs and exits, so no idle container is kept for it (satisfies "any
-trigger/scheduled can work"). Set `CRYPTO_BACKEND=local` to drop Vault and run
-with 3 (AES-GCM with an env key) — useful for Vault-free environments.
+trigger/scheduled can work"). Set `CRYPTO_BACKEND=local` to drop Vault.
 
 **Decision — separate `frontend` container vs backend-served bundle:** we keep a
 separate `frontend` container in dev for Vite hot-reload and a visibly clean
@@ -395,8 +397,10 @@ restructuring.
 | `users` | App accounts | `password_hash` (argon2id) — never the password |
 | `jira_connections` | A user's Jira credential | `api_token_ciphertext` (Vault Transit `vault:v1:…` by default, or AES-256-GCM + `api_token_nonce` locally) — never plaintext |
 | `api_keys` | IdentityHub keys for `/api/v1` | `key_hash` (SHA-256) + `key_prefix` for display — plaintext shown once |
-| `sessions` | Server-side sessions | opaque id is the cookie value; deleting the row revokes instantly |
 
+> **Sessions are not in Postgres** — they live in **Redis** (opaque id → user_id,
+> with a TTL). See the app-login design decision.
+>
 > **Finding tickets are not stored locally.** Jira is the single source of
 > truth — issues are created there (stamped with the `identityhub` label) and
 > the "recent findings" view reads them back via Jira search. See the design
@@ -446,11 +450,18 @@ Each choice below is something a reviewer might ask "why?" about.
 ### App login: server-side sessions, with OIDC (hosted IdP) or password
 - **Server-side sessions over JWT** (always): logout and expiry must revoke
   access *immediately*. A stateless JWT can't be revoked without extra denylist
-  machinery; deleting a `sessions` row is simpler and strictly safer for a
+  machinery; deleting a session is simpler and strictly safer for a
   credential-handling product. The cookie is `httpOnly`, `SameSite=Lax`, and
   `Secure` in production. **This session layer is identical regardless of how
   the user authenticated** — the login method only changes how we *establish*
   the session.
+- **Sessions live in Redis**, not the DB: an opaque session id → `user_id` with
+  the session TTL as the key expiry (Redis ages them out automatically — no
+  `expires_at` column or cleanup job). An out-of-process store is what makes
+  sessions survive restarts and work across multiple workers/replicas (an
+  in-process dict would log everyone out on deploy and break behind a load
+  balancer). Logout deletes the key → instant revocation. Swappable behind
+  `app/session_store.py`.
 - **OIDC via a hosted IdP (e.g. Auth0) when configured** — the production path.
   Authorization Code flow + PKCE (Authlib), endpoints discovered from the
   provider's `/.well-known/openid-configuration`. On callback we validate the
@@ -635,7 +646,7 @@ call.
 - **API keys**: high-entropy random `ih_live_…` values; only a SHA-256 hash and
   a short display prefix are stored. Plaintext is returned exactly once.
 - **Sessions**: opaque server-side ids in `httpOnly` + `SameSite=Lax` cookies,
-  `Secure` in production; revocable by row deletion.
+  `Secure` in production; stored in Redis with a TTL, revocable by deleting the key.
 - **Multi-tenancy**: every tenant-scoped query filters on `user_id`. Cross-tenant
   object access (e.g. revoking someone else's API key) returns `404`, not `403`,
   so existence isn't leaked. Finding tickets aren't stored locally — each user's

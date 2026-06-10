@@ -1,22 +1,21 @@
 """Authentication routes: register, login, logout, current user.
 
-Sessions are server-side. The cookie carries only an opaque id; logout and
-expiry delete the row, revoking access immediately (unlike a stateless JWT).
+Sessions are server-side, stored in Redis. The cookie carries only an opaque
+id; logout deletes the Redis key (and TTL expires it), revoking access
+immediately (unlike a stateless JWT).
 """
-from datetime import datetime, timedelta, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import session_store
 from app.config import get_settings
 from app.database import get_db
 from app.deps import current_user
-from app.models import JiraConnection, Session, User
+from app.models import JiraConnection, User
 from app.schemas import LoginRequest, RegisterRequest, UserResponse
 from app.security.passwords import hash_password, verify_password
-from app.security.tokens import generate_session_id
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -47,14 +46,8 @@ def _set_session_cookie(response: Response, session_id: str) -> None:
     )
 
 
-async def _create_session(db: AsyncSession, user_id: str) -> str:
-    session_id = generate_session_id()
-    expires = datetime.now(timezone.utc) + timedelta(
-        seconds=settings.session_ttl_seconds
-    )
-    db.add(Session(id=session_id, user_id=user_id, expires_at=expires))
-    await db.commit()
-    return session_id
+async def _create_session(user_id: str) -> str:
+    return await session_store.create(user_id, settings.session_ttl_seconds)
 
 
 async def _to_user_response(db: AsyncSession, user: User) -> UserResponse:
@@ -86,7 +79,7 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    session_id = await _create_session(db, user.id)
+    session_id = await _create_session(user.id)
     _set_session_cookie(response, session_id)
     return await _to_user_response(db, user)
 
@@ -113,21 +106,16 @@ async def login(
             detail="Invalid email or password.",
         )
 
-    session_id = await _create_session(db, user.id)
+    session_id = await _create_session(user.id)
     _set_session_cookie(response, session_id)
     return await _to_user_response(db, user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(
-    request: Request, response: Response, db: AsyncSession = Depends(get_db)
-):
+async def logout(request: Request, response: Response):
     session_id = request.cookies.get(settings.session_cookie_name)
     if session_id:
-        session = await db.get(Session, session_id)
-        if session is not None:
-            await db.delete(session)
-            await db.commit()
+        await session_store.delete(session_id)
     response.delete_cookie(settings.session_cookie_name, path="/")
 
 
@@ -187,7 +175,7 @@ async def oidc_callback(request: Request, db: AsyncSession = Depends(get_db)):
 
     user = await _upsert_oidc_user(db, issuer, subject, email)
 
-    session_id = await _create_session(db, user.id)
+    session_id = await _create_session(user.id)
     redirect = RedirectResponse(url=settings.oidc_post_login_redirect, status_code=302)
     _set_session_cookie(redirect, session_id)
     return redirect

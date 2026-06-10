@@ -13,9 +13,10 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import session_store
 from app.config import get_settings
 from app.database import get_db
-from app.models import ApiKey, Session, User
+from app.models import ApiKey, User
 from app.security.tokens import hash_api_key
 
 settings = get_settings()
@@ -24,31 +25,21 @@ settings = get_settings()
 async def current_user(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> User:
-    """Resolve the logged-in user from the session cookie."""
+    """Resolve the logged-in user from the session cookie (Redis-backed)."""
     session_id = request.cookies.get(settings.session_cookie_name)
     if not session_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
 
-    session = await db.get(Session, session_id)
-    if session is None:
+    # Redis returns None when the session is unknown or has expired (TTL).
+    user_id = await session_store.get_user_id(session_id)
+    if user_id is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session"
         )
 
-    # SQLite returns naive datetimes; normalize to UTC before comparing.
-    expires_at = session.expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        await db.delete(session)
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired"
-        )
-
-    user = await db.get(User, session.user_id)
+    user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session"

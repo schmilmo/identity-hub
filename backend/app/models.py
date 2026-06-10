@@ -86,17 +86,3 @@ class ApiKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-
-
-class Session(Base):
-    """Server-side session. The cookie holds the opaque id; deleting the row
-    revokes the session immediately."""
-
-    __tablename__ = "sessions"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # opaque token
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

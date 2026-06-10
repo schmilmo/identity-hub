@@ -7,13 +7,13 @@ how it's wired, how to run/test, conventions, and gotchas.
 ## What this is
 IdentityHub — a POC that reports Non-Human-Identity (NHI) findings to Jira, from a
 web UI and a REST API. FastAPI + async SQLAlchemy + Postgres backend; React + Vite
-+ TypeScript frontend; HashiCorp Vault (Transit) for credential encryption;
-optional OIDC (Auth0) login.
++ TypeScript frontend; Redis for sessions; HashiCorp Vault (Transit) for credential
+encryption; optional OIDC (Auth0) login.
 
 ## Run / build / test
 
 ```bash
-# Full stack (Postgres + Vault + backend + frontend)
+# Full stack (Postgres + Redis + Vault + backend + frontend)
 docker compose up --build          # UI :5173 · API :8000 (/docs) · Vault :8200
 
 # Backend tests (SQLite + mocked Jira; no Postgres/Vault/network needed)
@@ -36,8 +36,9 @@ backend/app/
   main.py            # app wiring, CORS, SessionMiddleware (only if OIDC), lifespan
   config.py          # Settings (env). get_settings() is lru_cached.
   database.py        # async engine; init_db() = create_all (NO migrations)
-  deps.py            # current_user (cookie) + api_key_user (Bearer) → User
-  models.py          # users, jira_connections, api_keys, sessions
+  deps.py            # current_user (cookie→Redis) + api_key_user (Bearer) → User
+  models.py          # users, jira_connections, api_keys  (NO sessions table)
+  session_store.py   # Redis-backed sessions; redis_client.py = the client
   schemas.py         # Pydantic request/response (decoupled from ORM)
   security/          # passwords (argon2), crypto (Vault/AES), tokens, oidc (Authlib)
   services/          # jira_client.py (thin async Jira REST), findings_service.py
@@ -59,6 +60,9 @@ frontend/src/
   Every tenant-scoped query filters on it. 1 user = 1 tenant for now.
 - **Jira is the source of truth for tickets** — no local ticket table. The "recent"
   view is a JQL search on the `identityhub` marker label.
+- **Sessions live in Redis** (opaque id → user_id, TTL = session lifetime), not the
+  DB. Out-of-process so they survive restarts and work across workers/replicas.
+  `app/session_store.py` is the seam; logout deletes the key.
 
 ## Key configurable behaviors (env)
 - `CRYPTO_BACKEND` = `vault` (default) | `local`. Vault Transit encrypts Jira
@@ -104,8 +108,9 @@ frontend/src/
 
 ## Testing
 - `backend/tests/conftest.py` swaps the Jira client for an in-memory fake keyed by
-  `site_url` (so two users on different Jira sites are isolated) and pins SQLite +
-  `CRYPTO_BACKEND=local`. No network, Postgres, or Vault required.
+  `site_url` (so two users on different Jira sites are isolated), backs sessions
+  with **fakeredis**, and pins SQLite + `CRYPTO_BACKEND=local`. No network,
+  Postgres, Redis, or Vault required.
 - Cover the contract you change: status codes, tenant isolation, error messages.
 
 ## Conventions for changes

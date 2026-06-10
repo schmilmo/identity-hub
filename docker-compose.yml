@@ -18,6 +18,15 @@ services:
       timeout: 3s
       retries: 10
 
+  # Redis — out-of-process session store (opaque session id → user_id, TTL'd).
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # HashiCorp Vault (dev mode) — Transit engine encrypts Jira tokens; the key
   # never leaves Vault. NOTE: dev mode is in-memory and auto-unsealed, so a
   # restart loses the key (and makes stored tokens undecryptable). Production
@@ -44,10 +53,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       vault:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://identityhub:identityhub@db:5432/identityhub
+      REDIS_URL: redis://redis:6379/0
       # Vault Transit is the default credential-encryption backend.
       CRYPTO_BACKEND: ${CRYPTO_BACKEND:-vault}
       VAULT_ADDR: http://vault:8200

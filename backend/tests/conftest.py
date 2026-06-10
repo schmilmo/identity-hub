@@ -15,9 +15,11 @@ os.environ["APP_ENCRYPTION_KEY"] = "test-encryption-key-deterministic-but-fine"
 # Tests use the local AES-GCM backend so they need no Vault container.
 os.environ["CRYPTO_BACKEND"] = "local"
 
+import fakeredis.aioredis  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app import redis_client  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services import jira_client as jc  # noqa: E402
 
@@ -30,6 +32,15 @@ def fresh_db():
     yield
     if _TEST_DB.exists():
         _TEST_DB.unlink()
+
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """Back sessions with an in-memory fake Redis — no Redis container needed,
+    and each test starts with a clean session store."""
+    redis_client._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    yield
+    redis_client._client = None
 
 
 @pytest.fixture(autouse=True)

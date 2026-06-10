@@ -20,8 +20,11 @@ class Settings(BaseSettings):
     # rotating it makes existing stored tokens undecryptable.
     app_encryption_key: str = "dev-only-insecure-key-change-me-32bytes!!"
 
-    # Session lifetime in seconds (default 7 days).
+    # Session lifetime in seconds (default 7 days). Used as the Redis key TTL.
     session_ttl_seconds: int = 60 * 60 * 24 * 7
+
+    # Redis — out-of-process session store (opaque session id → user_id, TTL'd).
+    redis_url: str = "redis://redis:6379/0"
 
     # Cookie settings. secure_cookies should be True behind HTTPS in prod.
     secure_cookies: bool = False
