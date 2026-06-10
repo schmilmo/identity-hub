@@ -144,21 +144,24 @@ class JiraClient:
         payload = {"object": {"url": url, "title": title}}
         await self._request("POST", f"/issue/{issue_key}/remotelink", json=payload)
 
-    async def search_app_issues(self, project_key: str, limit: int = 10) -> list[dict]:
-        """Return the most recent IdentityHub-created issues for a project.
+    async def search_app_issues(
+        self, project_key: str | None = None, limit: int = 10
+    ) -> list[dict]:
+        """Return the most recent IdentityHub-created issues, optionally scoped to
+        a project (None = across all projects the account can see).
 
         Jira is the source of truth: we query by the APP_LABEL marker rather
         than a local table. Note Jira's search index is eventually consistent,
         so a just-created issue may take a moment to appear here.
         """
-        jql = (
-            f'project = "{project_key}" AND labels = "{APP_LABEL}" '
-            f"ORDER BY created DESC"
-        )
+        clauses = [f'labels = "{APP_LABEL}"']
+        if project_key:
+            clauses.insert(0, f'project = "{project_key}"')
+        jql = " AND ".join(clauses) + " ORDER BY created DESC"
         params = {
             "jql": jql,
             "maxResults": str(limit),
-            "fields": "summary,created,labels",
+            "fields": "summary,created,labels,project",
         }
         query = urllib.parse.urlencode(params)
         resp = await self._request("GET", f"/search/jql?{query}")
@@ -185,9 +188,44 @@ class JiraClient:
                     "title": f.get("summary", ""),
                     "created": f.get("created"),
                     "labels": f.get("labels", []),
+                    "project_key": (f.get("project") or {}).get("key", ""),
                 }
             )
         return results
+
+    async def get_issue(self, issue_key: str, extra_field_ids: list[str]) -> dict:
+        """Fetch a single issue's details for the in-app detail view. Includes
+        the mapped NHI custom fields (by id) plus standard fields; the ADF
+        description is flattened back to plain text."""
+        fields = [
+            "summary", "description", "labels", "priority", "status",
+            "created", "assignee", *extra_field_ids,
+        ]
+        params = {"fields": ",".join(fields)}
+        query = urllib.parse.urlencode(params)
+        resp = await self._request("GET", f"/issue/{issue_key}?{query}")
+
+        if resp.status_code == 404:
+            raise JiraError(f"Issue {issue_key} not found in Jira.", status=404)
+        if resp.status_code != 200:
+            raise JiraError(
+                f"Could not load Jira issue (HTTP {resp.status_code}).", status=502
+            )
+
+        f = resp.json().get("fields", {})
+        custom = {cf_id: f.get(cf_id) for cf_id in extra_field_ids}
+        return {
+            "key": issue_key,
+            "url": f"https://{self._site_url}/browse/{issue_key}",
+            "title": f.get("summary", ""),
+            "description": _adf_to_text(f.get("description")),
+            "labels": f.get("labels", []),
+            "priority": (f.get("priority") or {}).get("name"),
+            "status": (f.get("status") or {}).get("name"),
+            "assignee": (f.get("assignee") or {}).get("displayName"),
+            "created": f.get("created"),
+            "custom_fields": custom,
+        }
 
 
 def _adf_from_text(text: str) -> dict:
@@ -201,6 +239,22 @@ def _adf_from_text(text: str) -> dict:
             para["content"].append({"type": "text", "text": line})
         content.append(para)
     return {"type": "doc", "version": 1, "content": content}
+
+
+def _adf_to_text(doc: dict | None) -> str:
+    """Flatten an ADF document to plain text (inverse of _adf_from_text):
+    concatenate text nodes within each paragraph, one line per paragraph."""
+    if not doc or not isinstance(doc, dict):
+        return ""
+    lines: list[str] = []
+    for block in doc.get("content", []):
+        parts = [
+            node.get("text", "")
+            for node in block.get("content", [])
+            if node.get("type") == "text"
+        ]
+        lines.append("".join(parts))
+    return "\n".join(lines).strip()
 
 
 def _extract_error(resp: httpx.Response) -> str:

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, apiErrorMessage, type FindingTicket } from "../api/client";
 import Alert from "./Alert";
 
@@ -78,10 +79,10 @@ export default function RecentTickets({
         <ul className="ticket-list">
           {display.map((t) => (
             <li key={t.jira_issue_key}>
-              <a href={t.jira_issue_url} target="_blank" rel="noreferrer">
+              <Link to={`/findings/${t.jira_issue_key}`}>
                 <span className="ticket-key">{t.jira_issue_key}</span>
                 <span className="ticket-title">{t.title}</span>
-              </a>
+              </Link>
               <div className="ticket-meta">
                 <span>{new Date(t.created_at).toLocaleString()}</span>
                 {t.labels

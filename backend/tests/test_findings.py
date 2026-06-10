@@ -132,6 +132,46 @@ def test_recent_scoped_by_project(client):
     assert len(client.get("/findings", params={"project_key": "SEC"}).json()) == 1
 
 
+def test_list_all_projects_when_project_omitted(client):
+    register(client)
+    connect_jira(client)
+    client.post("/findings", json={"project_key": "NHI", "title": "n", "description": ""})
+    client.post("/findings", json={"project_key": "SEC", "title": "s", "description": ""})
+    # No project_key → findings across all projects.
+    rows = client.get("/findings").json()
+    assert {r["project_key"] for r in rows} == {"NHI", "SEC"}
+    assert len(rows) == 2
+
+
+def test_finding_detail(client):
+    register(client)
+    connect_jira(client)
+    created = client.post(
+        "/findings",
+        json={
+            "project_key": "NHI",
+            "title": "Stale SA",
+            "description": "90d idle",
+            "labels": ["aws"],
+            "priority": "High",
+        },
+    ).json()
+    key = created["jira_issue_key"]
+
+    detail = client.get(f"/findings/{key}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["jira_issue_key"] == key
+    assert body["title"] == "Stale SA"
+    assert "90d idle" in body["description"]
+    assert body["priority"] == "High"
+    assert body["jira_issue_url"].endswith(key)
+
+
+def test_finding_detail_requires_auth(client):
+    assert client.get("/findings/NHI-1").status_code == 401
+
+
 def test_create_finding_without_jira_returns_409(client):
     register(client)
     resp = client.post(

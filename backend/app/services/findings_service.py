@@ -162,10 +162,11 @@ async def create_finding(
     }
 
 
-async def recent_findings(
-    db: AsyncSession, user: User, project_key: str, limit: int = 10
+async def list_findings(
+    db: AsyncSession, user: User, project_key: str | None = None, limit: int = 10
 ) -> list[dict]:
-    """The most recent IdentityHub-created issues for a project, read from Jira."""
+    """IdentityHub-created issues read from Jira. ``project_key=None`` lists
+    across all projects the account can see."""
     conn = await get_connection_or_409(db, user)
     client = client_for(conn)
 
@@ -179,9 +180,54 @@ async def recent_findings(
             "jira_issue_key": i["key"],
             "jira_issue_url": i["url"],
             "title": i["title"],
-            "project_key": project_key,
+            # Prefer the project from Jira; fall back to the requested one.
+            "project_key": i.get("project_key") or project_key or "",
             "labels": i["labels"],
             "created_at": i["created"],  # ISO string; pydantic coerces to datetime
         }
         for i in issues
     ]
+
+
+async def get_finding(db: AsyncSession, user: User, issue_key: str) -> dict:
+    """Full detail for one finding, reconstructed from Jira (the source of
+    truth). Maps any configured custom fields back to NHI context names."""
+    conn = await get_connection_or_409(db, user)
+    client = client_for(conn)
+
+    field_map = get_settings().field_map()
+    # nhi field name -> customfield id, and the reverse for reading back.
+    id_by_nhi = {k: v.get("id") for k, v in field_map.items() if v.get("id")}
+    extra_ids = list(id_by_nhi.values())
+
+    try:
+        issue = await client.get_issue(issue_key, extra_ids)
+    except JiraError as exc:
+        raise map_jira_error(exc) from exc
+
+    # Pull NHI context out of custom fields where mapped (value shape varies).
+    def _scalar(v):
+        if isinstance(v, dict):
+            return v.get("value") or v.get("name")
+        return v
+
+    custom = issue["custom_fields"]
+    context = {
+        nhi: _scalar(custom.get(cf_id)) for nhi, cf_id in id_by_nhi.items()
+    }
+
+    return {
+        "jira_issue_key": issue["key"],
+        "jira_issue_url": issue["url"],
+        "title": issue["title"],
+        "description": issue["description"],
+        "labels": issue["labels"],
+        "priority": issue["priority"],
+        "status": issue["status"],
+        "assignee": issue["assignee"],
+        "created_at": issue["created"],
+        "resource": context.get("resource"),
+        "category": context.get("category"),
+        "environment": context.get("environment"),
+        "last_activity": context.get("last_activity"),
+    }

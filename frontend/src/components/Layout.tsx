@@ -14,6 +14,12 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
         <nav className="nav">
           <Link className={pathname === "/" ? "active" : ""} to="/">
+            Report
+          </Link>
+          <Link
+            className={pathname.startsWith("/findings") ? "active" : ""}
+            to="/findings"
+          >
             Findings
           </Link>
           <Link

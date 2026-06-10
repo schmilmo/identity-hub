@@ -47,7 +47,8 @@ backend/app/
 frontend/src/
   api/client.ts      # single typed backend boundary; ApiError + apiErrorMessage()
   auth/AuthContext   # session user; /auth/config drives login mode
-  pages/ components/ # LoginPage, DashboardPage, ApiKeysPage + presentational parts
+  pages/ components/ # LoginPage, DashboardPage(=Report tab), FindingsListPage,
+                     #   FindingDetailPage, ApiKeysPage + presentational parts
 ```
 
 ## Architecture essentials

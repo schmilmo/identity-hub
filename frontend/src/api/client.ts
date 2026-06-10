@@ -110,6 +110,22 @@ export interface FindingTicket {
   created_at: string;
 }
 
+export interface FindingDetail {
+  jira_issue_key: string;
+  jira_issue_url: string;
+  title: string;
+  description: string;
+  labels: string[];
+  priority: string | null;
+  status: string | null;
+  assignee: string | null;
+  created_at: string | null;
+  resource: string | null;
+  category: string | null;
+  environment: string | null;
+  last_activity: string | null;
+}
+
 export const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"] as const;
 
 export interface CreateFindingPayload {
@@ -161,11 +177,20 @@ export const api = {
   // findings
   createFinding: (payload: CreateFindingPayload) =>
     request<FindingTicket>("POST", "/findings", payload),
+  // 10 most recent for one project (dashboard panel).
   recentFindings: (projectKey: string) =>
     request<FindingTicket[]>(
       "GET",
-      `/findings?project_key=${encodeURIComponent(projectKey)}`,
+      `/findings?limit=10&project_key=${encodeURIComponent(projectKey)}`,
     ),
+  // Browse findings; omit projectKey for all projects.
+  listFindings: (projectKey?: string | null, limit = 50) => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (projectKey) p.set("project_key", projectKey);
+    return request<FindingTicket[]>("GET", `/findings?${p.toString()}`);
+  },
+  getFinding: (key: string) =>
+    request<FindingDetail>("GET", `/findings/${encodeURIComponent(key)}`),
 
   // api keys
   listApiKeys: () => request<ApiKey[]>("GET", "/api-keys"),

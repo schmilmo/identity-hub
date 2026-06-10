@@ -104,6 +104,25 @@ class FindingTicketResponse(BaseModel):
     created_at: datetime
 
 
+class FindingDetailResponse(BaseModel):
+    """Full detail for the in-app finding page, reconstructed from Jira."""
+
+    jira_issue_key: str
+    jira_issue_url: str
+    title: str
+    description: str = ""
+    labels: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    status: str | None = None
+    assignee: str | None = None
+    created_at: datetime | None = None
+    # NHI context (populated from mapped custom fields when configured)
+    resource: str | None = None
+    category: str | None = None
+    environment: str | None = None
+    last_activity: str | None = None
+
+
 # ---- API keys ----
 class CreateApiKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)

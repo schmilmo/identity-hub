@@ -163,7 +163,10 @@ Open <http://localhost:5173>.
    summary with a **Disconnect** option. If Jira rejects the credentials you get
    a clear message explaining what to fix.
 
-3. **Report an NHI finding.** In **New NHI finding**:
+The UI has three tabs: **Report** (connect Jira + create findings), **Findings**
+(browse everything), and **API Keys**.
+
+3. **Report an NHI finding.** On the **Report** tab, in **New NHI finding**:
    - **Project** — a dropdown populated from your Jira workspace (fetched when
      the dashboard loads), showing `KEY — Name` for each project.
    - **Title** — the summary, e.g. `Stale Service Account: svc-deploy-prod`.
@@ -183,14 +186,21 @@ Open <http://localhost:5173>.
    link (a Jira *remote link*) that opens the app focused on that project — a
    cross-reference back from Jira to the NHI platform.
 
-4. **Review recent findings.** The **Recent findings** panel lists the 10 most
-   recent tickets *created through IdentityHub* for the selected project,
-   newest first, read **live from Jira** (filtered by the `identityhub` label).
-   Each row shows the creation time and any custom labels, and links to the Jira
-   issue in a new tab. A just-created ticket appears immediately even though
-   Jira's search index lags a moment behind.
+4. **Review recent findings (Report tab).** The **Recent findings** panel lists
+   the 10 most recent tickets *created through IdentityHub* for the selected
+   project, newest first, read **live from Jira** (filtered by the `identityhub`
+   label). A just-created ticket appears immediately even though Jira's search
+   index lags a moment behind.
 
-5. **Issue API keys for automation (optional).** Go to **API Keys** in the top
+5. **Browse all findings (Findings tab).** Lists app-created findings across
+   your workspace, with a **project filter** (or **All projects**). Clicking a
+   finding opens an **in-app detail page** — *not* the Jira issue directly —
+   reconstructed from Jira (the source of truth): title, description, labels,
+   priority/status/assignee, and the NHI context. From there an **"Open in
+   Jira ↗"** button jumps to the actual issue. (The same in-app detail page is
+   used from the Report tab's recent list.)
+
+6. **Issue API keys for automation (optional).** Go to **API Keys** in the top
    nav to let scanners / CI pipelines file findings programmatically:
    - Click **Generate key**, give it a name (e.g. `ci-prod-scanner`). The full
      key (`ih_live_…`) is shown **once** — copy it now; only a hash is stored.
@@ -435,12 +445,14 @@ Each choice below is something a reviewer might ask "why?" about.
   clear errors the backend produces surface verbatim in the UI.
 - **`src/auth/AuthContext.tsx`** — holds the session user; calls `/auth/me` on
   mount so a page refresh restores the session.
-- **`src/pages/`** — `LoginPage` (login/register toggle), `DashboardPage`
-  (orchestrates the Jira panel + create form + recent tickets), `ApiKeysPage`.
+- **`src/pages/`** — `LoginPage` (login/register or SSO), `DashboardPage` (the
+  **Report** tab: Jira panel + create form + recent), `FindingsListPage` (the
+  **Findings** tab: project filter + list), `FindingDetailPage` (in-app finding
+  detail + "Open in Jira"), `ApiKeysPage`.
 - **`src/components/`** — presentational pieces: `JiraConnectionPanel`,
   `CreateFindingForm` (project field is a dropdown populated from the workspace,
-  fetched via the backend on dashboard load), `RecentTickets` (links each issue
-  to Jira in a new tab), `Layout`, `Alert`.
+  fetched via the backend on dashboard load), `RecentTickets` (rows link to the
+  in-app detail page), `Layout`, `Alert`.
 
 > **The frontend never talks to Jira directly.** Every Jira interaction goes
 > through the backend (`/jira/*`, `/findings`), which holds the encrypted token
@@ -675,7 +687,8 @@ call.
 | DELETE | `/jira/connection` | Disconnect Jira |
 | GET | `/jira/projects` | List projects in the workspace |
 | POST | `/findings` | Create a finding ticket |
-| GET | `/findings?project_key=…` | 10 most recent app-created tickets |
+| GET | `/findings?project_key=…&limit=…` | App-created tickets; omit `project_key` for all projects |
+| GET | `/findings/{issue_key}` | Full detail for one finding (for the in-app detail page) |
 | POST | `/api-keys` | Create an API key (plaintext shown once) |
 | GET | `/api-keys` | List keys (prefix + metadata only) |
 | DELETE | `/api-keys/{id}` | Revoke a key |

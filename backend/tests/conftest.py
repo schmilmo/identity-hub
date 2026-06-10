@@ -92,23 +92,42 @@ def mock_jira(monkeypatch):
             if issue["key"] == issue_key:
                 issue["remote_links"].append({"url": url, "title": title})
 
-    async def fake_search(self, project_key, limit=10):
+    async def fake_search(self, project_key=None, limit=10):
         issues = [
             i
             for i in store.get(self._site_url, [])
-            if i["project_key"] == project_key and jc.APP_LABEL in i["labels"]
+            if (project_key is None or i["project_key"] == project_key)
+            and jc.APP_LABEL in i["labels"]
         ]
         issues = list(reversed(issues))[:limit]  # newest first
-        return [
-            {k: i[k] for k in ("key", "url", "title", "created", "labels")}
-            for i in issues
-        ]
+        keys = ("key", "url", "title", "created", "labels", "project_key")
+        return [{k: i[k] for k in keys} for i in issues]
+
+    async def fake_get_issue(self, issue_key, extra_field_ids):
+        for i in store.get(self._site_url, []):
+            if i["key"] == issue_key:
+                return {
+                    "key": i["key"],
+                    "url": i["url"],
+                    "title": i["title"],
+                    "description": i["description"],
+                    "labels": i["labels"],
+                    "priority": i.get("priority"),
+                    "status": "To Do",
+                    "assignee": None,
+                    "created": i["created"],
+                    "custom_fields": {
+                        cf: i["extra_fields"].get(cf) for cf in extra_field_ids
+                    },
+                }
+        raise jc.JiraError(f"Issue {issue_key} not found in Jira.", status=404)
 
     monkeypatch.setattr(jc.JiraClient, "verify", fake_verify)
     monkeypatch.setattr(jc.JiraClient, "list_projects", fake_list_projects)
     monkeypatch.setattr(jc.JiraClient, "create_issue", fake_create_issue)
     monkeypatch.setattr(jc.JiraClient, "add_remote_link", fake_add_remote_link)
     monkeypatch.setattr(jc.JiraClient, "search_app_issues", fake_search)
+    monkeypatch.setattr(jc.JiraClient, "get_issue", fake_get_issue)
     # Expose the store for tests that want to inspect what was sent to Jira.
     return store
 
