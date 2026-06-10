@@ -30,11 +30,28 @@ class Settings(BaseSettings):
     secure_cookies: bool = False
     session_cookie_name: str = "ih_session"
 
-    # Anthropic key for the NHI Blog Digest bonus (optional for core app).
-    anthropic_api_key: str = ""
-
     # CORS origin for the frontend dev server.
     frontend_origin: str = "http://localhost:5173"
+
+    # --- NHI Blog Digest bonus (separate worker; see app/digest) ---
+    # Provider-agnostic LLM via an OpenAI-compatible /chat/completions endpoint.
+    # Defaults to a local Ollama (free, no key); point at Groq/Gemini/OpenRouter
+    # by changing these three. llm_api_key is omitted for keyless local models.
+    llm_base_url: str = "http://ollama:11434/v1"
+    llm_model: str = "llama3.2:1b"
+    llm_api_key: str = ""
+    # Auto-pull the model on startup (Ollama only; no-op for hosted providers).
+    llm_auto_pull: bool = True
+
+    digest_interval_seconds: int = 60 * 60 * 24  # daily
+    digest_blog_url: str = "https://oasis.security/blog"
+    # Which IdentityHub user's Jira connection to file under, and the project.
+    digest_user_email: str = ""
+    digest_project_key: str = ""
+
+    @property
+    def digest_configured(self) -> bool:
+        return bool(self.digest_user_email and self.digest_project_key)
 
     # --- Credential encryption backend ---
     # "vault"  -> HashiCorp Vault Transit (default): the key never leaves Vault.

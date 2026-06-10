@@ -16,6 +16,9 @@ encryption; optional OIDC (Auth0) login.
 # Full stack (Postgres + Redis + Vault + backend + frontend)
 docker compose up --build          # UI :5173 · API :8000 (/docs) · Vault :8200
 
+# Bonus digest worker + local LLM (Ollama), behind a profile:
+docker compose --profile digest up --build   # needs DIGEST_USER_EMAIL/PROJECT_KEY
+
 # Backend tests (SQLite + mocked Jira; no Postgres/Vault/network needed)
 cd backend && .venv/bin/python -m pytest
 
@@ -43,6 +46,8 @@ backend/app/
   security/          # passwords (argon2), crypto (Vault/AES), tokens, oidc (Authlib)
   services/          # jira_client.py (thin async Jira REST), findings_service.py
   routers/           # auth, jira, findings, api_keys, external_api (/api/v1)
+  digest/            # bonus worker: blog.py (fetch), llm.py (OpenAI-compat
+                     #   summarize), run.py (periodic loop). `python -m app.digest.run`
   tests/             # pytest; conftest.py has an in-memory fake Jira keyed by site
 frontend/src/
   api/client.ts      # single typed backend boundary; ApiError + apiErrorMessage()
@@ -120,6 +125,11 @@ frontend/src/
   no standalone "Decision log" (removed deliberately).
 - End git commit messages with the `Co-Authored-By: Claude …` trailer.
 
-## Not built yet
-- Bonus: **NHI Blog Digest** (`digest/` service exists in compose under a profile,
-  code not written).
+## Bonus: NHI Blog Digest
+- `app/digest/` — periodic worker (separate container, shared code). Fetch latest
+  oasis.security/blog post → dedup via Redis → summarize via a **free,
+  provider-agnostic LLM** (OpenAI-compatible `chat/completions`; default = bundled
+  Ollama, no key; override `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` for Groq/etc.)
+  → create Jira ticket under `DIGEST_USER_EMAIL`'s connection.
+- No Anthropic/paid SDK. Don't invoke the claude-api skill here.
+- Runs behind the `digest` Compose profile (so default `up` stays lean).

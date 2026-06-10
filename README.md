@@ -25,6 +25,7 @@ external systems (scanners, CI/CD).
   - [Why not the `jira` Python package?](#why-not-the-jira-python-package)
 - [Security practices](#security-practices)
 - [API reference](#api-reference)
+- [NHI Blog Digest (bonus)](#nhi-blog-digest-bonus)
 - [Assumptions & scope](#assumptions--scope)
 
 ---
@@ -40,7 +41,7 @@ external systems (scanners, CI/CD).
 | Recent tickets view (10 most recent created via this app, per project) | ✅ | `app/routers/findings.py` |
 | External REST API with API-key auth, validation, status codes | ✅ | `app/routers/external_api.py` |
 | Web UI (login, Jira connect, create finding, recent tickets, API keys) | ✅ | `frontend/` (React + Vite + TS) |
-| Bonus: NHI Blog Digest automation | ⏳ planned | `digest/` |
+| Bonus: NHI Blog Digest automation | ✅ | `app/digest/` (periodic worker) |
 
 ## Setup
 
@@ -90,8 +91,9 @@ defaults work for a local run.
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Set all three to enable SSO login (e.g. Auth0). Unset = email+password. |
 | `OIDC_REDIRECT_URI` | `…/auth/oidc/callback` | Must match an Allowed Callback URL at the IdP |
 | `NHI_FIELD_MAP` | — | Optional JSON mapping NHI context fields to Jira custom fields; unmapped fields fall back to the description |
-| `ANTHROPIC_API_KEY` | — | For the bonus NHI Blog Digest |
-| `DIGEST_USER_EMAIL` / `DIGEST_PROJECT_KEY` | — | Target account + project for the bonus digest |
+| `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | Ollama / `llama3.2:1b` / — | Free LLM for the digest (OpenAI-compatible). Point at Groq/Gemini/etc. by overriding |
+| `DIGEST_INTERVAL_SECONDS` | `86400` | How often the digest runs |
+| `DIGEST_USER_EMAIL` / `DIGEST_PROJECT_KEY` | — | Whose Jira connection + which project the digest files under |
 
 ### Enabling SSO with a hosted IdP (Auth0)
 
@@ -313,18 +315,19 @@ Planned `docker compose` services:
 | `vault` | HashiCorp Vault (dev) — Transit engine encrypts Jira tokens | Yes |
 | `backend` | FastAPI + uvicorn | Yes |
 | `frontend` | React (Vite dev server in dev; static bundle in prod) | Yes |
-| `digest` | NHI Blog Digest batch job (bonus) | **No** — one-shot via `docker compose run --rm digest` |
+| `digest` | NHI Blog Digest periodic worker (bonus) | Only under the `digest` profile |
+| `ollama` | Free local LLM for the digest (bonus) | Only under the `digest` profile |
 
-Steady state is **5 long-running containers**; the digest is a batch job that
-runs and exits, so no idle container is kept for it (satisfies "any
-trigger/scheduled can work"). Set `CRYPTO_BACKEND=local` to drop Vault.
+Steady state is **5 long-running containers**. The bonus `digest` + `ollama`
+sit behind a Compose **profile**, so the default `up` stays lean and doesn't
+pull the large Ollama image; start them with `docker compose --profile digest
+up`. Set `CRYPTO_BACKEND=local` to drop Vault.
 
 **Decision — separate `frontend` container vs backend-served bundle:** we keep a
 separate `frontend` container in dev for Vite hot-reload and a visibly clean
 UI/backend split. A production build would instead serve the static React bundle
 from the backend (2 containers, single origin, no CORS). The CORS config in
-`app/main.py` exists to support the dev split. *(Final count pending — see the
-decision log.)*
+`app/main.py` exists to support the dev split.
 
 ## The three-layer identity model
 
@@ -719,6 +722,40 @@ itself rejected the request (e.g. stored credentials were revoked).
 
 Response (both endpoints) returns the created issue: `jira_issue_key`,
 `jira_issue_url`, `title`, `project_key`, `labels`, `created_at`.
+
+---
+
+## NHI Blog Digest (bonus)
+
+A periodic worker that fetches the latest post from `oasis.security/blog`,
+summarizes it with a free LLM, and files a Jira ticket — `app/digest/`.
+
+**Run it:**
+```bash
+# set DIGEST_USER_EMAIL + DIGEST_PROJECT_KEY in .env first, then:
+docker compose --profile digest up --build
+```
+
+**Design:**
+- **Separate worker container, shared codebase.** It reuses the existing
+  `jira_client`, `crypto`, `models`, `config`, and Redis but runs as its own
+  process — a scheduled batch job shouldn't share the API's lifecycle, and a
+  single worker avoids duplicate runs if the API is scaled to many replicas.
+- **Periodic, env-configured.** A resilient loop runs, then sleeps
+  `DIGEST_INTERVAL_SECONDS` (default daily); a failed run is logged and retried
+  next interval rather than killing the loop.
+- **Free, provider-agnostic LLM.** Summarization speaks the OpenAI-compatible
+  `chat/completions` shape, so it works with any provider by config: it defaults
+  to a bundled **Ollama** (local, free, no API key — the model is auto-pulled on
+  first run), and you can point `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` at a free
+  hosted endpoint (Groq, Gemini, OpenRouter) instead. No paid dependency.
+- **Dedup.** The last-posted URL is stored in Redis, so an unchanged latest post
+  doesn't create a duplicate ticket each interval.
+- **Reuses the credential model.** The ticket is filed under
+  `DIGEST_USER_EMAIL`'s encrypted Jira connection (decrypted via the same Vault/
+  AES backend) into `DIGEST_PROJECT_KEY`, labelled `identityhub` + `nhi-blog-digest`.
+- **Blog fetch is resilient:** tries RSS/Atom feeds first, falls back to scraping
+  the listing page.
 
 ---
 
