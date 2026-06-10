@@ -73,14 +73,34 @@ def _scrape_listing(html: str, base_url: str) -> dict | None:
     return None
 
 
-async def _extract_article_text(client: httpx.AsyncClient, url: str) -> str:
+def _strip_site_suffix(title: str) -> str:
+    """Drop a trailing brand suffix like ' | Oasis + Zscaler' or ' – Oasis'.
+    Only splits on pipe/en-dash (not hyphen) to avoid chopping real titles."""
+    return re.split(r"\s[|–]\s", title)[0].strip()
+
+
+def _clean_title(soup: BeautifulSoup) -> str:
+    """The post's real title: prefer og:title, then <h1>, then <title>."""
+    og = soup.find("meta", attrs={"property": "og:title"})
+    if og and og.get("content"):
+        return _strip_site_suffix(og["content"].strip())
+    h1 = soup.find("h1")
+    if h1:
+        return h1.get_text(" ", strip=True)
+    if soup.title and soup.title.string:
+        return _strip_site_suffix(soup.title.string.strip())
+    return ""
+
+
+async def _extract_article(client: httpx.AsyncClient, url: str) -> tuple[str, str]:
+    """Fetch an article page → (clean title, body text)."""
     resp = await _get(client, url)
     if resp is None:
-        return ""
+        return "", ""
     soup = BeautifulSoup(resp.text, "html.parser")
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text = "\n".join(p for p in paragraphs if p)
-    return re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(p for p in paragraphs if p))
+    return _clean_title(soup), text
 
 
 async def fetch_latest_post(blog_url: str) -> dict | None:
@@ -92,12 +112,15 @@ async def fetch_latest_post(blog_url: str) -> dict | None:
                 continue
             post = _parse_feed(resp.text)
             if post:
+                # Feed titles are already clean; only fetch the body if missing.
                 if not post["text"]:
-                    post["text"] = await _extract_article_text(client, post["url"])
+                    _, post["text"] = await _extract_article(client, post["url"])
                 log.info("Latest post via feed: %s", post["title"])
                 return post
 
-        # 2) Fall back to scraping the listing page.
+        # 2) Fall back to scraping the listing page for the latest post link,
+        # then read the real title + body from the article page itself (the
+        # listing link text is the whole card, not a clean title).
         resp = await _get(client, blog_url)
         if resp is None:
             log.warning("Could not reach blog at %s", blog_url)
@@ -106,6 +129,9 @@ async def fetch_latest_post(blog_url: str) -> dict | None:
         if not post:
             log.warning("Could not find a post link on %s", blog_url)
             return None
-        post["text"] = await _extract_article_text(client, post["url"])
+        title, text = await _extract_article(client, post["url"])
+        if title:
+            post["title"] = title  # prefer the article's real title
+        post["text"] = text
         log.info("Latest post via scrape: %s", post["title"])
         return post
