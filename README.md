@@ -764,6 +764,21 @@ docker compose --profile digest up --build
 - **Blog fetch is resilient:** tries RSS/Atom feeds first, falls back to scraping
   the listing page.
 
+**Future hardening (dedup).** The current dedup (a Redis marker per
+`(user, project)` holding the last-posted URL) is correct for a single worker
+with a live Redis, but could be strengthened:
+- **Durable dedup state.** Redis here has no persistence volume, so a Redis
+  restart drops the markers (and sessions) — the next cycle could re-file the
+  current post once. Enable Redis AOF/RDB persistence (or move the marker to a
+  durable store) to survive restarts.
+- **Atomic check-and-set for multiple workers.** With a single worker the
+  check-then-create-then-set sequence can't race. If the digest were scaled to
+  more than one replica, two could both see "pending" and double-file; making
+  the marker write a `SET key value NX` (first writer wins) closes that.
+- **Jira-side idempotency.** The strongest guard, surviving any Redis loss, is
+  to also query Jira before creating (JQL for an existing `nhi-blog-digest`
+  ticket whose description references the post URL) and skip if found.
+
 ---
 
 ## Assumptions & scope
