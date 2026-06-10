@@ -92,11 +92,13 @@ def test_priority_forwarded(client, mock_jira):
 def test_cross_reference_link_added(client, mock_jira):
     register(client)
     connect_jira(client)
-    client.post("/findings", json={"project_key": "NHI", "title": "t"})
+    created = client.post("/findings", json={"project_key": "NHI", "title": "t"}).json()
+    key = created["jira_issue_key"]
     links = mock_jira["acme.atlassian.net"][-1]["remote_links"]
     assert len(links) == 1
     assert links[0]["title"] == "View in IdentityHub"
-    assert "project=NHI" in links[0]["url"]
+    # Deep-links to this finding's detail page.
+    assert links[0]["url"].endswith(f"/findings/{key}")
 
 
 def test_invalid_priority_rejected(client):

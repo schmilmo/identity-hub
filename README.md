@@ -185,8 +185,8 @@ The UI has three tabs: **Report** (connect Jira + create findings), **Findings**
 
    Submit to create the Jira issue. A confirmation shows the new issue key
    (e.g. `SAM1-42`). The Jira issue also gets a **"View in IdentityHub"** web
-   link (a Jira *remote link*) that opens the app focused on that project — a
-   cross-reference back from Jira to the NHI platform.
+   link (a Jira *remote link*) that opens **that finding's detail page** in the
+   app — a cross-reference back from Jira to the NHI platform.
 
 4. **Review recent findings (Report tab).** The **Recent findings** panel lists
    the 10 most recent tickets *created through IdentityHub* for the selected
@@ -597,12 +597,11 @@ screen, and are configured per-project on team-managed projects. So mapping is
 
 ### Cross-reference: Jira → IdentityHub
 - After creating an issue we attach a Jira **remote link** ("View in
-  IdentityHub") pointing to `<frontend>/?project=<KEY>`, so a user reading the
-  Jira ticket can jump straight back into the NHI platform (deep-linked to the
-  project). It's added **best-effort** — a link failure never undoes a
-  successfully created ticket. Combined with the `identityhub` label, this gives
-  a bidirectional reference: app→Jira (the issue link) and Jira→app (the remote
-  link).
+  IdentityHub") pointing to `<frontend>/findings/<issue_key>`, so a user reading
+  the Jira ticket can jump straight to **that finding's detail page** in the app.
+  It's added **best-effort** — a link failure never undoes a successfully created
+  ticket. Combined with the `identityhub` label, this gives a bidirectional
+  reference: app→Jira (the "Open in Jira" button) and Jira→app (the remote link).
 
 ### Shared service layer for UI and API
 - `findings_service.create_finding()` is the single code path for ticket

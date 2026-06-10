@@ -137,11 +137,11 @@ async def create_finding(
     except JiraError as exc:
         raise map_jira_error(exc) from exc
 
-    # Cross-reference: add a web link on the Jira issue back to IdentityHub so a
-    # user can jump from the ticket into the app (deep-linked to the project).
-    # Best-effort — a link failure must not undo a successfully created ticket.
+    # Cross-reference: add a web link on the Jira issue back to IdentityHub,
+    # deep-linked to *this* finding's detail page. Best-effort — a link failure
+    # must not undo a successfully created ticket.
     settings = get_settings()
-    app_url = f"{settings.frontend_origin.rstrip('/')}/?project={req.project_key}"
+    app_url = f"{settings.frontend_origin.rstrip('/')}/findings/{result['key']}"
     try:
         await client.add_remote_link(result["key"], app_url, "View in IdentityHub")
     except JiraError:
