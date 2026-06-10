@@ -763,20 +763,33 @@ docker compose --profile digest up --build
 - **Blog fetch is resilient:** tries RSS/Atom feeds first, falls back to scraping
   the listing page.
 
-**Future hardening (dedup).** The current dedup (a Redis marker per
-`(user, project)` holding the last-posted URL) is correct for a single worker
-with a live Redis, but could be strengthened:
-- **Durable dedup state.** Redis here has no persistence volume, so a Redis
-  restart drops the markers (and sessions) — the next cycle could re-file the
-  current post once. Enable Redis AOF/RDB persistence (or move the marker to a
-  durable store) to survive restarts.
-- **Atomic check-and-set for multiple workers.** With a single worker the
-  check-then-create-then-set sequence can't race. If the digest were scaled to
-  more than one replica, two could both see "pending" and double-file; making
-  the marker write a `SET key value NX` (first writer wins) closes that.
-- **Jira-side idempotency.** The strongest guard, surviving any Redis loss, is
-  to also query Jira before creating (JQL for an existing `nhi-blog-digest`
-  ticket whose description references the post URL) and skip if found.
+**Future improvements.** The current worker files only the single most-recent
+post and dedups via a Redis marker per `(user, project)`. Planned refinements:
+
+- **Only file posts published *after* a project was enabled.** Today, enabling a
+  project files the newest *existing* post on the first run. Instead, record each
+  subscription's "starting point" at subscribe time (seed its last-seen marker,
+  or compare each post's publish date against the subscription's `created_at`),
+  so only posts published *after* opt-in produce tickets.
+- **File *all* new posts since the last run, not just the latest.** The worker
+  currently considers only the single most-recent post, so if several posts were
+  published between runs the earlier ones are missed. It should walk the feed and
+  create a ticket for every post newer than the stored last-seen marker
+  (oldest → newest).
+- **Persist the last-seen state durably (survive Redis restarts).** The marker
+  lives in Redis, which here has no persistence — a restart drops it and the next
+  cycle could re-create tickets. Store it in Postgres (e.g. `last_post_url` /
+  `last_post_at` per subscription) so it survives restarts; that also makes
+  "all posts since last run" precise and exact.
+- **Atomic / multi-worker safety.** With a single worker the
+  check-then-create-then-set can't race; if scaled to multiple replicas, make the
+  marker write a `SET … NX` (first writer wins). The strongest guard, surviving
+  any state loss, is to also query Jira before creating (JQL for an existing
+  `nhi-blog-digest` ticket referencing the post URL) and skip if found.
+- **Cleaner post titles.** oasis.security exposes no RSS at the usual paths, so
+  the worker scrapes the listing page, which can yield a noisy title (currently
+  truncated to Jira's 255-char limit). A targeted selector or the real feed URL
+  would give clean titles.
 
 ---
 
