@@ -35,7 +35,7 @@ external systems (scanners, CI/CD).
 |---|---|---|
 | App login / logout, secure server-side sessions | ✅ | `app/routers/auth.py` |
 | Multi-tenant isolation (no cross-user data leakage) | ✅ | `app/deps.py`, every query scoped by `user_id` |
-| Connect a Jira workspace (credentials encrypted at rest) | ✅ | `app/routers/jira.py` |
+| Connect a Jira workspace (token encrypted at rest via Vault Transit) | ✅ | `app/routers/jira.py` |
 | Create an NHI finding ticket (project + title + description) | ✅ | `app/routers/findings.py` |
 | Recent tickets view (10 most recent created via this app, per project) | ✅ | `app/routers/findings.py` |
 | External REST API with API-key auth, validation, status codes | ✅ | `app/routers/external_api.py` |
