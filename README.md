@@ -760,6 +760,8 @@ docker compose --profile digest up --build
   hosted endpoint (Groq, Gemini, OpenRouter) instead. No paid dependency.
 - **Dedup per (user, project).** The last-posted URL is stored in Redis keyed by
   user+project, so each subscribed project receives a given post exactly once.
+- **Same cross-link as UI/API findings.** Each digest ticket also gets the
+  "View in IdentityHub" Jira remote link back to its `/findings/{key}` page.
 - **Blog fetch is resilient:** tries RSS/Atom feeds first, falls back to scraping
   the listing page.
 

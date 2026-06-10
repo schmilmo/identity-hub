@@ -81,8 +81,9 @@ async def run_once() -> list[str]:
                 log.warning("User %s has no Jira connection; skipping.", sub.user_id)
                 continue
 
+            client = client_for(conn)
             try:
-                result = await client_for(conn).create_issue(
+                result = await client.create_issue(
                     project_key=sub.project_key,
                     summary=ticket_title,
                     description=description,
@@ -94,6 +95,13 @@ async def run_once() -> list[str]:
                     sub.user_id, sub.project_key, exc.message,
                 )
                 continue
+
+            # Cross-reference back to the finding's detail page (best-effort).
+            app_url = f"{s.frontend_origin.rstrip('/')}/findings/{result['key']}"
+            try:
+                await client.add_remote_link(result["key"], app_url, "View in IdentityHub")
+            except JiraError:
+                pass
 
             await redis.set(_dedup_key(sub.user_id, sub.project_key), post["url"])
             created.append(result["key"])
