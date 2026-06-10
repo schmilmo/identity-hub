@@ -25,7 +25,6 @@ external systems (scanners, CI/CD).
 - [Security practices](#security-practices)
 - [API reference](#api-reference)
 - [Assumptions & scope](#assumptions--scope)
-- [Decision log](#decision-log)
 
 ---
 
@@ -678,30 +677,3 @@ Response (both endpoints) returns the created issue: `jira_issue_key`,
 - **Projects list shows the first 50** (no pagination) — sufficient for a POC.
 - **Jira Cloud only** (REST API v3, always HTTPS). Jira Server/Data Center uses a
   different auth model and isn't targeted.
-
----
-
-## Decision log
-
-A running record of significant decisions, newest first. This README is kept as
-the living source of truth — every change to the project updates it here.
-
-| Date | Decision | Rationale | Status |
-|---|---|---|---|
-| 2026-06-09 | **OIDC login via a hosted IdP (Auth0)** with Authlib; password auth kept as the no-config fallback | Federated SSO/MFA/deprovisioning; provider-agnostic via OIDC discovery. Session layer unchanged — only `auth.py` + `users` table differ between modes | ✅ implemented (builds + 33 tests green; live SSO pending Auth0 client creds) |
-| 2026-06-09 | **Vault Transit is the default credential-encryption backend** (hvac); `local` AES-GCM kept as a pluggable fallback | Encryption key never leaves Vault, removing the "key in env" weakness; backend selected by `CRYPTO_BACKEND` behind `crypto.py`. Dev-mode in-memory caveat documented | ✅ implemented & verified live (`vault:v1:…` stored, create/decrypt against real Jira) |
-| 2026-06-09 | **Jira is the single source of truth** — dropped the local `finding_tickets` table; recent view is a label-based Jira search | No drift, no stale mirror. Trade-offs (eventual consistency, workspace-wide label, no source flag) documented; UI optimistically shows new tickets | ✅ implemented & verified live |
-| 2026-06-10 | NHI context → Jira custom fields via **Option 1**: a deployment-level `NHI_FIELD_MAP` env JSON; description fallback for unmapped | Custom fields need admin setup + opaque ids + per-project config (team-managed), so mapping is opt-in. Env map is simplest; per-connection DB mapping (Option 2) noted as a future enhancement | ✅ implemented (unit-tested) |
-| 2026-06-10 | Cross-reference Jira→app via a "View in IdentityHub" remote link (deep-linked to `?project=KEY`); best-effort | Bidirectional reference (label app→Jira, remote link Jira→app); never blocks ticket creation | ✅ implemented |
-| 2026-06-10 | Dropped **due date** from the finding form; **last activity** is now a date picker | Due date is a Jira-side workflow concern, not an NHI finding attribute; last-activity is genuinely a date | ✅ implemented |
-| 2026-06-09 | Create-finding fields: custom labels, priority (best-effort), NHI context in description; issue type fixed to `Task` | Richer findings while staying portable across projects; no fragile custom-field mapping | ✅ implemented & verified live |
-| 2026-06-09 | Frontend: React + Vite + TS, single typed API client; project chosen from a backend-fed dropdown | Frontend never calls Jira directly — all Jira access is proxied through the backend, which holds the credential | ✅ implemented (builds clean) |
-| 2026-06-09 | Backend stack: FastAPI + async SQLAlchemy + Postgres | Async fits the Jira-fan-out workload; real RDBMS for a credible multi-tenancy story | ✅ implemented & smoke-tested |
-| 2026-06-09 | Three-layer identity model (session / encrypted Jira token / hashed API key) | Separation of credentials, least privilege, independent revocation | ✅ implemented |
-| 2026-06-09 | Hand-written async Jira client over the `jira` SDK | Async fit, tiny surface area, error-message control, reviewability | ✅ implemented |
-| 2026-06-09 | SQLite for tests, Postgres for the app | Fast container-free tests; portable via the ORM. TZ-normalization guard added in `deps.py` | ✅ implemented |
-| 2026-06-09 | Docker Compose stack (Postgres + backend + frontend) as the primary run path | "Frictionless to run" — `docker compose up --build`, verified end-to-end against live Postgres | ✅ implemented |
-| 2026-06-09 | Test suite on SQLite with an in-memory fake Jira (32 tests) | No network/Postgres needed; covers auth, findings, labels/priority/context, external API, and cross-tenant isolation | ✅ implemented (32 passing) |
-| 2026-06-09 | 3 long-running containers; `frontend` stays a separate Vite container | Hot-reload + visibly clean UI/backend split. Documented that prod could serve the bundle from the backend for a 2-container, single-origin setup | ✅ resolved |
-| 2026-06-09 | Digest (bonus) runs as a one-shot container behind a Compose profile | It's a batch job; no reason to idle a container. Started via `docker compose run --rm digest` | ⏳ planned |
-
