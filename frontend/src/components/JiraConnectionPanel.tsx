@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, ApiError, type JiraConnection } from "../api/client";
+import { api, apiErrorMessage, type JiraConnection } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import Alert from "./Alert";
 
@@ -28,7 +28,7 @@ export default function JiraConnectionPanel({
       await refresh();
       onChange();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not connect.");
+      setError(apiErrorMessage(err, "Could not connect."));
     } finally {
       setBusy(false);
     }
@@ -42,7 +42,7 @@ export default function JiraConnectionPanel({
       await refresh();
       onChange();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not disconnect.");
+      setError(apiErrorMessage(err, "Could not disconnect."));
     } finally {
       setBusy(false);
     }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
-  ApiError,
+  apiErrorMessage,
   type FindingTicket,
   type JiraConnection,
   type JiraProject,
@@ -50,11 +50,7 @@ export default function DashboardPage() {
       setProjectKey((prev) => prev || projs[0]?.key || "");
     } catch (err) {
       // Projects can fail (e.g. revoked token) even if a connection row exists.
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : "Could not load your Jira workspace.",
-      );
+      setError(apiErrorMessage(err, "Could not load your Jira workspace."));
       try {
         setConnection(await api.getJiraConnection());
       } catch {

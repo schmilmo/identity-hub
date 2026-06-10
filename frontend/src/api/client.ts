@@ -19,10 +19,30 @@ export interface AuthConfig {
 
 export class ApiError extends Error {
   status: number;
+  // Stable discriminant: `instanceof` is unreliable across module identities
+  // (e.g. under the Vite dev server's HMR, where two copies of this class can
+  // exist). Code should use isApiError()/apiErrorMessage() instead.
+  readonly isApiError = true as const;
   constructor(status: number, message: string) {
     super(message);
+    this.name = "ApiError";
     this.status = status;
   }
+}
+
+/** HMR-safe type guard — checks the discriminant, not just the prototype. */
+export function isApiError(e: unknown): e is ApiError {
+  return (
+    e instanceof ApiError ||
+    (typeof e === "object" &&
+      e !== null &&
+      (e as { isApiError?: boolean }).isApiError === true)
+  );
+}
+
+/** The server's `detail` message if this was an API error, else a fallback. */
+export function apiErrorMessage(e: unknown, fallback: string): string {
+  return isApiError(e) ? e.message : fallback;
 }
 
 async function request<T>(

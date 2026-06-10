@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "../auth/AuthContext";
-import { api, ApiError, oidcLoginUrl } from "../api/client";
+import { api, apiErrorMessage, oidcLoginUrl } from "../api/client";
 import Alert from "../components/Alert";
 
 export default function LoginPage() {
@@ -31,9 +31,7 @@ export default function LoginPage() {
         await register(email, password);
       }
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Something went wrong. Try again.",
-      );
+      setError(apiErrorMessage(err, "Something went wrong. Please try again."));
     } finally {
       setSubmitting(false);
     }

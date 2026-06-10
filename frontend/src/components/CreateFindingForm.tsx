@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import {
   api,
-  ApiError,
+  apiErrorMessage,
   PRIORITIES,
   type FindingTicket,
   type JiraProject,
@@ -87,7 +87,7 @@ export default function CreateFindingForm({
       reset();
       onCreated(ticket);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create ticket.");
+      setError(apiErrorMessage(err, "Could not create ticket."));
     } finally {
       setBusy(false);
     }

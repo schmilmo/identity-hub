@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, ApiError, type ApiKey, type CreatedApiKey } from "../api/client";
+import { api, apiErrorMessage, type ApiKey, type CreatedApiKey } from "../api/client";
 import Alert from "../components/Alert";
 
 export default function ApiKeysPage() {
@@ -13,7 +13,7 @@ export default function ApiKeysPage() {
     try {
       setKeys(await api.listApiKeys());
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not load keys.");
+      setError(apiErrorMessage(err, "Could not load keys."));
     }
   }
 
@@ -31,7 +31,7 @@ export default function ApiKeysPage() {
       setName("");
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create key.");
+      setError(apiErrorMessage(err, "Could not create key."));
     } finally {
       setBusy(false);
     }
@@ -44,7 +44,7 @@ export default function ApiKeysPage() {
       await api.revokeApiKey(id);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not revoke key.");
+      setError(apiErrorMessage(err, "Could not revoke key."));
     }
   }
 

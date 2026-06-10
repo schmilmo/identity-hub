@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, type FindingTicket } from "../api/client";
+import { api, apiErrorMessage, type FindingTicket } from "../api/client";
 import Alert from "./Alert";
 
 const MARKER = "identityhub";
@@ -36,9 +36,7 @@ export default function RecentTickets({
       })
       .catch((err) => {
         if (!cancelled)
-          setError(
-            err instanceof ApiError ? err.message : "Could not load tickets.",
-          );
+          setError(apiErrorMessage(err, "Could not load tickets."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
