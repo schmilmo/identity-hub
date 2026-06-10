@@ -19,6 +19,7 @@ external systems (scanners, CI/CD).
 - [Using the web app](#using-the-web-app)
 - [Architecture](#architecture)
 - [The three-layer identity model](#the-three-layer-identity-model)
+- [Multi-tenancy](#multi-tenancy)
 - [Data model](#data-model)
 - [Design decisions](#design-decisions)
   - [Why not the `jira` Python package?](#why-not-the-jira-python-package)
@@ -348,6 +349,40 @@ Scanner ──Bearer ih_live_…──► /api/v1/findings
 - Per-key lifecycle: name, revoke, `last_used_at`, independent of Jira.
 - Clean multi-tenancy: auth resolves to a `user_id`, and every query filters on
   it — the tenant boundary lives in one place (`app/deps.py`).
+
+## Multi-tenancy
+
+The model is **1 user = 1 tenant**, and the tenant boundary is a single,
+consistently-applied key: `user_id`.
+
+- **One place resolves identity.** Both auth schemes in `app/deps.py` collapse to
+  a `User`: the **session cookie** (`current_user`) for the UI, and the
+  **API key** (`api_key_user`) for the external API, which resolves to the key's
+  *owning* user. Downstream code never trusts client-supplied ids — it scopes by
+  the `user.id` it derived from the credential.
+- **Every tenant-scoped query filters on `user_id`.** Jira connection (unique per
+  user), API keys, and sessions are all bound to it. Cross-tenant object access
+  (e.g. revoking someone else's key) returns **`404`, not `403`**, so existence
+  isn't leaked.
+- **Findings isolation is delegated to Jira.** There's no local ticket store, so
+  there's nothing shared to leak: each user's create/search runs against *their
+  own* encrypted Jira connection, and an external API call acts on the key
+  owner's connection — never another tenant's.
+- **Credential isolation.** Each tenant's Jira token is encrypted at rest (Vault
+  Transit) and only decrypted transiently for that user's request; API keys are
+  stored only as hashes.
+- **Concurrent users don't interfere.** The stack is async with no shared
+  per-user mutable state — each request resolves its own user and DB session.
+- **Verified** in `backend/tests/test_multitenancy.py`: findings isolated across
+  users, no cross-tenant API-key revocation, and an API key routes creation to
+  its owner's Jira.
+
+**Limitations (by design, documented):** there's no organization-with-many-users
+concept — the schema is shaped so a separate `tenant_id` could be added later
+without restructuring. And the `identityhub` marker label is workspace-wide, so
+two IdentityHub users sharing *one* Jira account would see each other's
+app-created findings; with distinct Jira accounts (the normal case) isolation
+holds.
 
 ## Data model
 
