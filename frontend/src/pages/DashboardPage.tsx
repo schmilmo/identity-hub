@@ -10,6 +10,7 @@ import { useAuth } from "../auth/AuthContext";
 import JiraConnectionPanel from "../components/JiraConnectionPanel";
 import CreateFindingForm from "../components/CreateFindingForm";
 import RecentTickets from "../components/RecentTickets";
+import DigestPanel from "../components/DigestPanel";
 import Alert from "../components/Alert";
 
 export default function DashboardPage() {
@@ -86,6 +87,7 @@ export default function DashboardPage() {
               refreshKey={refreshKey}
               pending={pending}
             />
+            <DigestPanel projects={projects} />
           </div>
         </>
       )}

@@ -5,12 +5,12 @@ mocked, the fake Jira client, and fakeredis for dedup.
 """
 import pytest
 
-from app.config import get_settings
 from app.database import SessionLocal, engine, init_db
 from app.digest import blog
 from app.digest import run as digest_run
-from app.models import JiraConnection, User
+from app.models import DigestSubscription, JiraConnection, User
 from app.security.crypto import encrypt
+from tests.conftest import connect_jira, register
 
 
 def test_parse_rss_feed_returns_first_item():
@@ -43,12 +43,12 @@ def test_scrape_listing_finds_first_post_link():
 
 
 @pytest.mark.asyncio
-async def test_run_once_creates_ticket_and_dedups(monkeypatch, mock_jira):
+async def test_run_once_files_per_subscription_and_dedups(monkeypatch, mock_jira):
     # Isolate engine connections from other tests' event loops.
     await engine.dispose()
     await init_db()
     try:
-        # Seed the digest user + an (encrypted) Jira connection directly.
+        # Seed a user + (encrypted) Jira connection + a digest subscription.
         ct, nonce = encrypt("tok-123")
         async with SessionLocal() as db:
             user = User(email="digest@example.com", password_hash="x")
@@ -63,11 +63,8 @@ async def test_run_once_creates_ticket_and_dedups(monkeypatch, mock_jira):
                     api_token_nonce=nonce,
                 )
             )
+            db.add(DigestSubscription(user_id=user.id, project_key="NHI"))
             await db.commit()
-
-        s = get_settings()
-        monkeypatch.setattr(s, "digest_user_email", "digest@example.com")
-        monkeypatch.setattr(s, "digest_project_key", "NHI")
 
         async def fake_fetch(url):
             return {"title": "Post X", "url": "https://b/x", "text": "body"}
@@ -78,8 +75,8 @@ async def test_run_once_creates_ticket_and_dedups(monkeypatch, mock_jira):
         monkeypatch.setattr(blog, "fetch_latest_post", fake_fetch)
         monkeypatch.setattr(digest_run.llm, "summarize", fake_summarize)
 
-        key = await digest_run.run_once()
-        assert key and key.startswith("NHI-")
+        created = await digest_run.run_once()
+        assert len(created) == 1 and created[0].startswith("NHI-")
 
         ticket = mock_jira["acme.atlassian.net"][-1]
         assert ticket["title"].startswith("NHI Blog Digest: Post X")
@@ -87,16 +84,45 @@ async def test_run_once_creates_ticket_and_dedups(monkeypatch, mock_jira):
         assert "A concise summary." in ticket["description"]
         assert "https://b/x" in ticket["description"]
 
-        # Second run: same post URL → deduped, no new ticket.
-        assert await digest_run.run_once() is None
+        # Second run: same post URL → deduped for that (user, project).
+        assert await digest_run.run_once() == []
         assert len(mock_jira["acme.atlassian.net"]) == 1
     finally:
         await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_run_once_skips_when_unconfigured(monkeypatch):
-    s = get_settings()
-    monkeypatch.setattr(s, "digest_user_email", "")
-    monkeypatch.setattr(s, "digest_project_key", "")
-    assert await digest_run.run_once() is None
+async def test_run_once_skips_when_no_subscriptions(monkeypatch):
+    await engine.dispose()
+    await init_db()
+    try:
+        async def fake_fetch(url):
+            return {"title": "Post", "url": "https://b/x", "text": "body"}
+
+        monkeypatch.setattr(blog, "fetch_latest_post", fake_fetch)
+        assert await digest_run.run_once() == []
+    finally:
+        await engine.dispose()
+
+
+def test_subscriptions_crud(client):
+    register(client)
+    connect_jira(client)
+    # Empty by default.
+    assert client.get("/digest/subscriptions").json()["project_keys"] == []
+    # Set two (one duplicate + blank → cleaned).
+    resp = client.put(
+        "/digest/subscriptions",
+        json={"project_keys": ["NHI", "SEC", "NHI", "  "]},
+    )
+    assert resp.status_code == 200
+    assert sorted(resp.json()["project_keys"]) == ["NHI", "SEC"]
+    # Persisted.
+    assert sorted(client.get("/digest/subscriptions").json()["project_keys"]) == ["NHI", "SEC"]
+    # Replace with a smaller set.
+    client.put("/digest/subscriptions", json={"project_keys": ["SEC"]})
+    assert client.get("/digest/subscriptions").json()["project_keys"] == ["SEC"]
+
+
+def test_subscriptions_require_auth(client):
+    assert client.get("/digest/subscriptions").status_code == 401

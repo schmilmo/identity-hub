@@ -17,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.database import init_db
-from app.routers import api_keys, auth, external_api, findings, jira
+from app.routers import api_keys, auth, digest, external_api, findings, jira
 from app.security import crypto
 
 settings = get_settings()
@@ -77,4 +77,5 @@ app.include_router(auth.router)
 app.include_router(jira.router)
 app.include_router(findings.router)
 app.include_router(api_keys.router)
+app.include_router(digest.router)
 app.include_router(external_api.router)

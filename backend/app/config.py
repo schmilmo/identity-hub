@@ -45,13 +45,8 @@ class Settings(BaseSettings):
 
     digest_interval_seconds: int = 60 * 60 * 24  # daily
     digest_blog_url: str = "https://oasis.security/blog"
-    # Which IdentityHub user's Jira connection to file under, and the project.
-    digest_user_email: str = ""
-    digest_project_key: str = ""
-
-    @property
-    def digest_configured(self) -> bool:
-        return bool(self.digest_user_email and self.digest_project_key)
+    # Targets are per-user subscriptions (digest_subscriptions table), chosen in
+    # the UI — not a deployment-level user/project.
 
     # --- Credential encryption backend ---
     # "vault"  -> HashiCorp Vault Transit (default): the key never leaves Vault.

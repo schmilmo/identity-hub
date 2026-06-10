@@ -16,65 +16,88 @@ from app import redis_client
 from app.config import get_settings
 from app.database import SessionLocal, init_db
 from app.digest import blog, llm
-from app.models import JiraConnection, User
+from app.models import DigestSubscription, JiraConnection
 from app.services.findings_service import client_for
 from app.services.jira_client import JiraError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("digest")
 
-_LAST_URL_KEY = "digest:last_url"
+
+def _dedup_key(user_id: str, project_key: str) -> str:
+    # Per (user, project): each subscribed project gets a given post once.
+    return f"digest:last:{user_id}:{project_key}"
 
 
-async def run_once() -> str | None:
-    """Do one digest cycle. Returns the created issue key, or None if skipped."""
+async def run_once() -> list[str]:
+    """Do one digest cycle across all user subscriptions. Returns created keys.
+
+    Fetches and summarizes the latest post once, then files a ticket for each
+    subscription whose project hasn't seen this post yet, using that user's own
+    Jira connection.
+    """
     s = get_settings()
-    if not s.digest_configured:
-        log.info("Digest not configured (set DIGEST_USER_EMAIL + DIGEST_PROJECT_KEY); skipping.")
-        return None
-
     post = await blog.fetch_latest_post(s.digest_blog_url)
     if not post:
         log.warning("No blog post found; skipping.")
-        return None
+        return []
 
     redis = redis_client.get_redis()
-    if await redis.get(_LAST_URL_KEY) == post["url"]:
-        log.info("Latest post unchanged (%s); already digested.", post["url"])
-        return None
-
-    summary = await llm.summarize(post["title"], post["text"])
+    created: list[str] = []
 
     async with SessionLocal() as db:
-        result = await db.execute(select(User).where(User.email == s.digest_user_email))
-        user = result.scalar_one_or_none()
-        if user is None:
-            log.error("Digest user %s not found.", s.digest_user_email)
-            return None
-        result = await db.execute(
-            select(JiraConnection).where(JiraConnection.user_id == user.id)
-        )
-        conn = result.scalar_one_or_none()
-        if conn is None:
-            log.error("Digest user %s has no Jira connection.", s.digest_user_email)
-            return None
+        subs = (await db.execute(select(DigestSubscription))).scalars().all()
+        if not subs:
+            log.info("No digest subscriptions; nothing to do.")
+            return []
 
-        client = client_for(conn)
+        # Which subscriptions still need this post? (skip the LLM if none do)
+        pending = [
+            sub
+            for sub in subs
+            if await redis.get(_dedup_key(sub.user_id, sub.project_key)) != post["url"]
+        ]
+        if not pending:
+            log.info("Latest post already digested for all subscriptions.")
+            return []
+
+        summary = await llm.summarize(post["title"], post["text"])
         description = f"{summary}\n\nSource: {post['url']}"
-        try:
-            created = await client.create_issue(
-                project_key=s.digest_project_key,
-                summary=f"NHI Blog Digest: {post['title']}",
-                description=description,
-                labels=["nhi-blog-digest"],
-            )
-        except JiraError as exc:
-            log.error("Jira rejected digest ticket: %s", exc.message)
-            return None
 
-    await redis.set(_LAST_URL_KEY, post["url"])
-    log.info("Created digest ticket %s for post: %s", created["key"], post["title"])
-    return created["key"]
+        conn_cache: dict[str, JiraConnection | None] = {}
+        for sub in pending:
+            if sub.user_id not in conn_cache:
+                result = await db.execute(
+                    select(JiraConnection).where(
+                        JiraConnection.user_id == sub.user_id
+                    )
+                )
+                conn_cache[sub.user_id] = result.scalar_one_or_none()
+            conn = conn_cache[sub.user_id]
+            if conn is None:
+                log.warning("User %s has no Jira connection; skipping.", sub.user_id)
+                continue
+
+            try:
+                result = await client_for(conn).create_issue(
+                    project_key=sub.project_key,
+                    summary=f"NHI Blog Digest: {post['title']}",
+                    description=description,
+                    labels=["nhi-blog-digest"],
+                )
+            except JiraError as exc:
+                log.error(
+                    "Jira rejected digest ticket for %s/%s: %s",
+                    sub.user_id, sub.project_key, exc.message,
+                )
+                continue
+
+            await redis.set(_dedup_key(sub.user_id, sub.project_key), post["url"])
+            created.append(result["key"])
+            log.info("Created digest ticket %s in %s", result["key"], sub.project_key)
+
+    log.info("Digest cycle done: %d ticket(s) created.", len(created))
+    return created
 
 
 async def main() -> None:

@@ -118,8 +118,6 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       DIGEST_INTERVAL_SECONDS: ${DIGEST_INTERVAL_SECONDS:-86400}
       DIGEST_BLOG_URL: ${DIGEST_BLOG_URL:-https://oasis.security/blog}
-      DIGEST_USER_EMAIL: ${DIGEST_USER_EMAIL:-}
-      DIGEST_PROJECT_KEY: ${DIGEST_PROJECT_KEY:-}
     command: ["python", "-m", "app.digest.run"]
 
   # Local, free LLM for the digest (no API key). Only started with the digest

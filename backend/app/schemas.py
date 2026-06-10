@@ -123,6 +123,21 @@ class FindingDetailResponse(BaseModel):
     last_activity: str | None = None
 
 
+# ---- Digest subscriptions ----
+class DigestSubscriptionsResponse(BaseModel):
+    project_keys: list[str] = Field(default_factory=list)
+
+
+class UpdateDigestSubscriptionsRequest(BaseModel):
+    project_keys: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("project_keys")
+    @classmethod
+    def clean(cls, keys: list[str]) -> list[str]:
+        # Trim, drop blanks, de-duplicate (order-preserving).
+        return list(dict.fromkeys(k.strip() for k in keys if k.strip()))
+
+
 # ---- API keys ----
 class CreateApiKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)

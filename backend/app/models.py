@@ -86,3 +86,19 @@ class ApiKey(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class DigestSubscription(Base):
+    """A user's opt-in for the NHI Blog Digest: which Jira project to file the
+    digest ticket in. One row per (user, project). The digest worker files
+    under this user's own Jira connection."""
+
+    __tablename__ = "digest_subscriptions"
+    __table_args__ = (UniqueConstraint("user_id", "project_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    project_key: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -462,6 +462,27 @@ button:disabled {
   color: #6ee787;
 }
 
+/* ---- Digest projects ---- */
+.digest-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.check-row input {
+  width: auto;
+  margin: 0;
+}
+
 /* ---- Findings list / detail ---- */
 .findings-page,
 .finding-detail {

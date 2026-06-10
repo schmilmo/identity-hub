@@ -93,7 +93,7 @@ defaults work for a local run.
 | `NHI_FIELD_MAP` | — | Optional JSON mapping NHI context fields to Jira custom fields; unmapped fields fall back to the description |
 | `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | Ollama / `llama3.2:1b` / — | Free LLM for the digest (OpenAI-compatible). Point at Groq/Gemini/etc. by overriding |
 | `DIGEST_INTERVAL_SECONDS` | `86400` | How often the digest runs |
-| `DIGEST_USER_EMAIL` / `DIGEST_PROJECT_KEY` | — | Whose Jira connection + which project the digest files under |
+| _(digest targets)_ | — | Per-user: each user picks project(s) in the app (Report → NHI Blog Digest); no env needed |
 
 ### Enabling SSO with a hosted IdP (Auth0)
 
@@ -410,6 +410,7 @@ restructuring.
 | `users` | App accounts | `password_hash` (argon2id) — never the password |
 | `jira_connections` | A user's Jira credential | `api_token_ciphertext` (Vault Transit `vault:v1:…` by default, or AES-256-GCM + `api_token_nonce` locally) — never plaintext |
 | `api_keys` | IdentityHub keys for `/api/v1` | `key_hash` (SHA-256) + `key_prefix` for display — plaintext shown once |
+| `digest_subscriptions` | Per-user blog-digest opt-in | `(user_id, project_key)` — which projects the digest files into, per user |
 
 > **Sessions are not in Postgres** — they live in **Redis** (opaque id → user_id,
 > with a TTL). See the app-login design decision.
@@ -695,6 +696,8 @@ call.
 | POST | `/api-keys` | Create an API key (plaintext shown once) |
 | GET | `/api-keys` | List keys (prefix + metadata only) |
 | DELETE | `/api-keys/{id}` | Revoke a key |
+| GET | `/digest/subscriptions` | Projects this user subscribed to the blog digest |
+| PUT | `/digest/subscriptions` | Replace this user's digest project set |
 
 ### External (API-key auth)
 | Method | Path | Description | Codes |
@@ -730,30 +733,34 @@ Response (both endpoints) returns the created issue: `jira_issue_key`,
 A periodic worker that fetches the latest post from `oasis.security/blog`,
 summarizes it with a free LLM, and files a Jira ticket — `app/digest/`.
 
-**Run it:**
+**Configure (per user):** in the app, **Report → NHI Blog Digest**, tick the
+project(s) you want digest tickets filed into. Stored in `digest_subscriptions`.
+
+**Run the worker:**
 ```bash
-# set DIGEST_USER_EMAIL + DIGEST_PROJECT_KEY in .env first, then:
 docker compose --profile digest up --build
 ```
 
 **Design:**
+- **Per-user subscriptions, each user's own identity.** Targets aren't a
+  deployment-level setting — every user opts in by choosing project(s) in the UI,
+  and the worker files each ticket under **that user's** encrypted Jira
+  connection (decrypted via the same Vault/AES backend). Fully multi-tenant.
 - **Separate worker container, shared codebase.** It reuses the existing
   `jira_client`, `crypto`, `models`, `config`, and Redis but runs as its own
   process — a scheduled batch job shouldn't share the API's lifecycle, and a
   single worker avoids duplicate runs if the API is scaled to many replicas.
-- **Periodic, env-configured.** A resilient loop runs, then sleeps
-  `DIGEST_INTERVAL_SECONDS` (default daily); a failed run is logged and retried
-  next interval rather than killing the loop.
+- **Periodic.** A resilient loop runs, then sleeps `DIGEST_INTERVAL_SECONDS`
+  (default daily); a failed run is logged and retried next interval rather than
+  killing the loop. The post is fetched and summarized **once per cycle**, then
+  filed across all subscriptions.
 - **Free, provider-agnostic LLM.** Summarization speaks the OpenAI-compatible
   `chat/completions` shape, so it works with any provider by config: it defaults
   to a bundled **Ollama** (local, free, no API key — the model is auto-pulled on
   first run), and you can point `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` at a free
   hosted endpoint (Groq, Gemini, OpenRouter) instead. No paid dependency.
-- **Dedup.** The last-posted URL is stored in Redis, so an unchanged latest post
-  doesn't create a duplicate ticket each interval.
-- **Reuses the credential model.** The ticket is filed under
-  `DIGEST_USER_EMAIL`'s encrypted Jira connection (decrypted via the same Vault/
-  AES backend) into `DIGEST_PROJECT_KEY`, labelled `identityhub` + `nhi-blog-digest`.
+- **Dedup per (user, project).** The last-posted URL is stored in Redis keyed by
+  user+project, so each subscribed project receives a given post exactly once.
 - **Blog fetch is resilient:** tries RSS/Atom feeds first, falls back to scraping
   the listing page.
 

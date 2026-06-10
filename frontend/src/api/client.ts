@@ -192,6 +192,14 @@ export const api = {
   getFinding: (key: string) =>
     request<FindingDetail>("GET", `/findings/${encodeURIComponent(key)}`),
 
+  // digest subscriptions
+  getDigestSubscriptions: () =>
+    request<{ project_keys: string[] }>("GET", "/digest/subscriptions"),
+  setDigestSubscriptions: (project_keys: string[]) =>
+    request<{ project_keys: string[] }>("PUT", "/digest/subscriptions", {
+      project_keys,
+    }),
+
   // api keys
   listApiKeys: () => request<ApiKey[]>("GET", "/api-keys"),
   createApiKey: (name: string) =>

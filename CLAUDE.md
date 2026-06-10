@@ -40,12 +40,13 @@ backend/app/
   config.py          # Settings (env). get_settings() is lru_cached.
   database.py        # async engine; init_db() = create_all (NO migrations)
   deps.py            # current_user (cookie→Redis) + api_key_user (Bearer) → User
-  models.py          # users, jira_connections, api_keys  (NO sessions table)
+  models.py          # users, jira_connections, api_keys, digest_subscriptions
+                     #   (NO sessions table — Redis; NO findings table — Jira)
   session_store.py   # Redis-backed sessions; redis_client.py = the client
   schemas.py         # Pydantic request/response (decoupled from ORM)
   security/          # passwords (argon2), crypto (Vault/AES), tokens, oidc (Authlib)
   services/          # jira_client.py (thin async Jira REST), findings_service.py
-  routers/           # auth, jira, findings, api_keys, external_api (/api/v1)
+  routers/           # auth, jira, findings, api_keys, digest, external_api (/api/v1)
   digest/            # bonus worker: blog.py (fetch), llm.py (OpenAI-compat
                      #   summarize), run.py (periodic loop). `python -m app.digest.run`
   tests/             # pytest; conftest.py has an in-memory fake Jira keyed by site
@@ -127,9 +128,11 @@ frontend/src/
 
 ## Bonus: NHI Blog Digest
 - `app/digest/` — periodic worker (separate container, shared code). Fetch latest
-  oasis.security/blog post → dedup via Redis → summarize via a **free,
-  provider-agnostic LLM** (OpenAI-compatible `chat/completions`; default = bundled
-  Ollama, no key; override `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` for Groq/etc.)
-  → create Jira ticket under `DIGEST_USER_EMAIL`'s connection.
+  oasis.security/blog post → summarize once via a **free, provider-agnostic LLM**
+  (OpenAI-compatible `chat/completions`; default = bundled Ollama, no key;
+  override `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY` for Groq/etc.) → file a ticket
+  for each **per-user subscription** (`digest_subscriptions`, set in UI: Report →
+  NHI Blog Digest) under **that user's own** Jira connection. Dedup per
+  (user, project) in Redis.
 - No Anthropic/paid SDK. Don't invoke the claude-api skill here.
 - Runs behind the `digest` Compose profile (so default `up` stays lean).
