@@ -63,6 +63,9 @@ async def run_once() -> list[str]:
 
         summary = await llm.summarize(post["title"], post["text"])
         description = f"{summary}\n\nSource: {post['url']}"
+        # Jira caps the summary (title) at 255 chars; the scrape fallback can
+        # yield a long title, so truncate defensively.
+        ticket_title = f"NHI Blog Digest: {post['title']}"[:255]
 
         conn_cache: dict[str, JiraConnection | None] = {}
         for sub in pending:
@@ -81,7 +84,7 @@ async def run_once() -> list[str]:
             try:
                 result = await client_for(conn).create_issue(
                     project_key=sub.project_key,
-                    summary=f"NHI Blog Digest: {post['title']}",
+                    summary=ticket_title,
                     description=description,
                     labels=["nhi-blog-digest"],
                 )
